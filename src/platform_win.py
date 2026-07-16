@@ -139,7 +139,7 @@ class WindowsPlatform:
         return elapsed_tick_seconds(int(get_tick_count()), int(info.dwTime))
 
     def open_path(self, path: Path) -> None:
-        os.startfile(str(path))  # type: ignore[attr-defined]
+        cast(Any, os).startfile(str(path))
 
     def notify(self, title: str, message: str) -> None:
         try:
