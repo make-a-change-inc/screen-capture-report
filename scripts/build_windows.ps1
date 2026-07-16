@@ -6,9 +6,19 @@ function Invoke-NativeCommand {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @()
     )
-    & $FilePath @ArgumentList
-    if ($LASTEXITCODE -ne 0) {
-        throw "$FilePath exited with code $LASTEXITCODE"
+    # Windows PowerShell 5.1 converts native stderr into ErrorRecord objects.
+    # Keep those records visible without letting ErrorActionPreference stop the
+    # script before the authoritative native exit code can be inspected.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $FilePath @ArgumentList
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "$FilePath exited with code $exitCode"
     }
 }
 
