@@ -79,6 +79,27 @@ jobs:
                 SHA256 = $hash.Hash
               }
             } | ConvertTo-Json | Set-Content (Join-Path $evidence "artifact-manifest.json")
+            $deliverables = @(
+              Get-Item "dist\ScreenCaptureReport\ScreenCaptureReport.exe" -ErrorAction SilentlyContinue
+              Get-ChildItem "dist\installer" -Filter *.exe -File -ErrorAction SilentlyContinue
+              Get-Item "dist\ScreenCaptureReport-windows-x64.zip" -ErrorAction SilentlyContinue
+            )
+            $deliverables | ForEach-Object {
+              $hash = Get-FileHash $_.FullName -Algorithm SHA256
+              [PSCustomObject]@{
+                Path = $_.FullName.Substring((Resolve-Path .).Path.Length + 1)
+                Size = $_.Length
+                SHA256 = $hash.Hash
+              }
+            } | ConvertTo-Json | Set-Content (Join-Path $evidence "deliverable-manifest.json")
+            Write-Host "Deliverable manifest:"
+            Get-Content (Join-Path $evidence "deliverable-manifest.json") | Write-Host
+          }
+          $smokeEvidence = "dist\smoke-evidence\startup-smoke.json"
+          if (Test-Path $smokeEvidence) {
+            Copy-Item $smokeEvidence $evidence
+            Write-Host "Startup smoke evidence:"
+            Get-Content $smokeEvidence | Write-Host
           }
 
       - name: Upload Windows package and evidence
