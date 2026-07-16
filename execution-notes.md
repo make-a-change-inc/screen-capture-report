@@ -36,5 +36,14 @@ Updated: 2026-07-16
 
 ## Blocked or unverified
 
-- Real Windows installation/E2E remains unverified because no interactive Windows 10/11 environment was found. This is the second consecutive goal-turn observation of the same blocker and the goal remains active; code-level mocks and the unexecuted Windows Server workflow are not substituted for this evidence.
+- Real Windows installation/E2E remains unverified because no interactive Windows 10/11 environment was found. The third consecutive goal-turn audit found the same state: no local Windows VM/image, no existing GitHub Windows runner/workflow, expired AWS/GCP sessions, and no reachable Tailscale peer. Code-level mocks and the unexecuted Windows Server workflow are not substituted for this evidence, so the persistent goal is blocked rather than declared Done.
 - Safe Gemini/SMTP credentials and a labelled accuracy sample were not found or accessed; live accuracy, live cost, and live delivery remain unmeasured rather than passed.
+
+## Exact unblock and rerun procedure
+
+1. Make a clean interactive Windows 10 22H2 or Windows 11 x64 test account available, locally or through an already-approved remote environment. It must permit tray interaction, Win+L, restart, multiple-monitor testing, and per-user install/uninstall. A Windows Server CI runner alone is insufficient.
+2. Place this branch on that machine without exposing credentials. If branch push is explicitly authorized, first run the `Windows verification` workflow and retain its artifact as supporting evidence; push remains unperformed in the current state.
+3. Use dedicated non-production Gemini and SMTP credentials plus synthetic screen content and a labelled sample. Never use production employee data for the POC verification.
+4. Run `scripts/build_windows.ps1`, then `scripts/smoke_windows.ps1`, then every item in `docs/windows-e2e-checklist.md`. Save redacted logs, screenshots, reports, installer hashes, and command output under `e2e-evidence/<date>/` without committing credentials or personal data.
+5. Run `src.cli metrics`, `export-labels`, and `accuracy`; require measured capture success of at least 95%, labelled category agreement of at least 80%, and measured total cost of at most 100 JPY/person-day. Missing measurements remain failures.
+6. Re-run pytest, ruff, mypy, dependency audit, secret scan, actionlint, and the independent read-only adversarial review. Only then reconsider Done.
