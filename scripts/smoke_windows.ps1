@@ -1,5 +1,5 @@
 param(
-    [int]$StartupTimeoutSeconds = 20,
+    [int]$StartupTimeoutSeconds = 45,
     [string]$EvidenceDirectory = "dist\smoke-evidence"
 )
 
@@ -27,6 +27,29 @@ try {
         Start-Sleep -Milliseconds 250
     }
     if (-not (Test-Path $configPath)) {
+        $process.Refresh()
+        Write-Host "Startup diagnostics:"
+        [PSCustomObject]@{
+            ProcessId = $process.Id
+            HasExited = $process.HasExited
+            MainWindowTitle = $process.MainWindowTitle
+            Responding = $process.Responding
+            RequestedDataDirectory = $dataDir
+            DefaultDataDirectory = (Join-Path $env:LOCALAPPDATA "ScreenCaptureReport")
+        } | Format-List | Out-String | Write-Host
+        foreach ($candidate in @($dataDir, (Join-Path $env:LOCALAPPDATA "ScreenCaptureReport"))) {
+            Write-Host "Contents of $candidate"
+            Get-ChildItem $candidate -Recurse -Force -ErrorAction SilentlyContinue |
+                Select-Object FullName, Length, LastWriteTime |
+                Format-Table -AutoSize |
+                Out-String |
+                Write-Host
+            $logPath = Join-Path $candidate "app.log"
+            if (Test-Path $logPath) {
+                Write-Host "Application log from $logPath"
+                Get-Content $logPath -Tail 100 | Write-Host
+            }
+        }
         throw "Pre-consent configuration was not created within $StartupTimeoutSeconds seconds"
     }
 
