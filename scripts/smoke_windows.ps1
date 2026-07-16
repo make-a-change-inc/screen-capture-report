@@ -13,6 +13,7 @@ if ($env:OS -ne "Windows_NT") {
 $exe = Resolve-Path "dist\ScreenCaptureReport\ScreenCaptureReport.exe"
 $dataDir = Join-Path $env:TEMP ("ScreenCaptureReport-smoke-" + [guid]::NewGuid())
 $env:SCREEN_CAPTURE_REPORT_DATA_DIR = $dataDir
+$env:SCREEN_CAPTURE_REPORT_STARTUP_DIAGNOSTICS = "1"
 $process = $null
 $secondProcess = $null
 
@@ -22,7 +23,7 @@ try {
     $configPath = Join-Path $dataDir "config.json"
     while ((Get-Date) -lt $deadline -and -not (Test-Path $configPath)) {
         if ($process.HasExited) {
-            throw "ScreenCaptureReport exited during startup with code $($process.ExitCode)"
+            break
         }
         Start-Sleep -Milliseconds 250
     }
@@ -49,6 +50,14 @@ try {
                 Write-Host "Application log from $logPath"
                 Get-Content $logPath -Tail 100 | Write-Host
             }
+            $failurePath = Join-Path $candidate "startup-failure.txt"
+            if (Test-Path $failurePath) {
+                Write-Host "Redacted startup failure from $failurePath"
+                Get-Content $failurePath | Write-Host
+            }
+        }
+        if ($process.HasExited) {
+            throw "ScreenCaptureReport exited during startup with code $($process.ExitCode)"
         }
         throw "Pre-consent configuration was not created within $StartupTimeoutSeconds seconds"
     }

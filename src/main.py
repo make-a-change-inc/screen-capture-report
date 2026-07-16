@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import sys
+import traceback
 from pathlib import Path
 
 from src.analyzer import AnalysisCoordinator, build_gateway
@@ -26,6 +28,31 @@ from src.ui import WindowsTrayUI
 from src.utils import configure_logging
 
 logger = logging.getLogger(__name__)
+
+
+def startup_failure_diagnostic(exc: Exception) -> str:
+    """Return stack locations without exception messages, locals, or user data."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    lines = [f"exception_type={type(exc).__name__}"]
+    lines.extend(
+        f"frame={Path(frame.filename).name}:{frame.lineno}:{frame.name}" for frame in frames
+    )
+    return "\n".join(lines) + "\n"
+
+
+def record_startup_failure(exc: Exception) -> None:
+    logger.critical("Fatal startup failure exception_type=%s", type(exc).__name__)
+    if os.environ.get("SCREEN_CAPTURE_REPORT_STARTUP_DIAGNOSTICS") != "1":
+        return
+    try:
+        data_dir = get_data_dir()
+        (data_dir / "startup-failure.txt").write_text(
+            startup_failure_diagnostic(exc),
+            encoding="utf-8",
+        )
+    except Exception:
+        # Diagnostics must never obscure or replace the original startup error.
+        return
 
 
 def prepare_uninstall_state(
@@ -168,4 +195,11 @@ def _run_application(
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        exit_code = main()
+    except Exception as exc:
+        record_startup_failure(exc)
+        if os.environ.get("SCREEN_CAPTURE_REPORT_STARTUP_DIAGNOSTICS") == "1":
+            raise SystemExit(1) from None
+        raise
+    raise SystemExit(exit_code)

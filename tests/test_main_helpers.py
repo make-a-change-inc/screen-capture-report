@@ -1,7 +1,7 @@
 from datetime import datetime, time, timedelta
 
 from src.config import STORED_SECRET_KEYS, MemorySecretStore
-from src.main import prepare_uninstall_state
+from src.main import prepare_uninstall_state, startup_failure_diagnostic
 from src.security import EncryptionService
 from src.storage import Database
 
@@ -34,3 +34,14 @@ def test_prepare_uninstall_purges_secrets_when_database_is_corrupt(tmp_path) -> 
     prepare_uninstall_state(tmp_path, secrets, encryption=EncryptionService.for_tests())
 
     assert all(secrets.get(key) is None for key in STORED_SECRET_KEYS)
+
+
+def test_startup_failure_diagnostic_omits_exception_message_and_full_paths() -> None:
+    try:
+        raise ValueError("synthetic-secret-must-not-be-logged")
+    except ValueError as exc:
+        diagnostic = startup_failure_diagnostic(exc)
+
+    assert "exception_type=ValueError" in diagnostic
+    assert "synthetic-secret-must-not-be-logged" not in diagnostic
+    assert str(__file__) not in diagnostic
