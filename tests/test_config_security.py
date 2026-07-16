@@ -12,7 +12,12 @@ from src.config import (
     WindowsSecretStore,
     has_required_onboarding_secrets,
 )
-from src.security import EncryptedFileStore, EncryptionService, PassthroughKeyProtector
+from src.security import (
+    EncryptedFileStore,
+    EncryptionService,
+    PassthroughKeyProtector,
+    WindowsDPAPIProtector,
+)
 
 
 def test_settings_round_trip_and_consent(tmp_path: Path) -> None:
@@ -112,3 +117,20 @@ def test_windows_secret_delete_reports_primary_failure_after_trying_fallback() -
         store.delete("gemini_api_key")
 
     assert fallback.deleted == ["gemini_api_key"]
+
+
+def test_windows_dpapi_protector_uses_pywin32_return_contract() -> None:
+    class FakeWin32Crypt:
+        @staticmethod
+        def CryptProtectData(*_args):
+            return b"protected-key"
+
+        @staticmethod
+        def CryptUnprotectData(*_args):
+            return ("ScreenCaptureReport data key", b"plain-key")
+
+    protector = WindowsDPAPIProtector.__new__(WindowsDPAPIProtector)
+    protector._win32crypt = FakeWin32Crypt()
+
+    assert protector.protect(b"plain-key") == b"protected-key"
+    assert protector.unprotect(b"protected-key") == b"plain-key"

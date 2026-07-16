@@ -34,7 +34,7 @@ class WindowsDPAPIProtector:
             None,
             None,
             0,
-        )[1]
+        )
 
     def unprotect(self, value: bytes) -> bytes:
         return self._win32crypt.CryptUnprotectData(value, None, None, None, 0)[1]
