@@ -93,6 +93,8 @@ macOS/Linuxでは、Windows APIをフェイク化した単体・統合・契約�
 
 このスクリプトは品質ゲートを再実行してからPyInstaller onedirを作成し、`iscc.exe`があればInno Setupインストーラも生成します。Inno Setupがなければzipを作成します。PyInstallerはクロスコンパイル非対応なので、macOSで生成したspecだけをWindows完成証拠にはできません。
 
+`.github/workflows/windows-ci.yml`は、許可後に`blushup-windows`をpushした場合、GitHubのWindows 2022ランナーで品質ゲート、PyInstallerビルド、起動前同意のfail-closed、二重起動防止を確認し、ハッシュ付き成果物を保存します。このCIはWindows Server上の非対話スモークであり、Windows 10/11のトレイ操作、Win+L、複数モニター、DPAPI、実APIを含む対話E2Eの代替にはなりません。
+
 ## 精度・成功率・原価の測定
 
 日次の取得成功率とAPI原価:

@@ -16,6 +16,7 @@ Updated: 2026-07-16
 - [x] Implement daily employee and weekly management reports with audience checks.
 - [x] Implement secret storage, retention, audit, packaging, install/uninstall, and startup opt-in.
 - [x] Add unit, integration, contract, and restart-recovery tests.
+- [x] Add a no-secret Windows Actions build/smoke workflow and automated pre-consent/single-instance evidence collection for use after push is authorized.
 - [ ] Build and execute the Windows E2E checklist in a real Windows environment.
 - [x] Run an independent read-only adversarial review and resolve code-level P0/P1 findings.
 
@@ -31,8 +32,9 @@ Updated: 2026-07-16
 - `pip-audit`: no known vulnerabilities in the pinned lock. `cryptography` is fixed at 48.0.1 after resolving GHSA-537c-gmf6-5ccf.
 - Reproducible universal dependency lock with hashes created with `google-genai==1.75.0`, `pywin32==312` on Windows, and PyInstaller 6.21.0. A Windows-target dry resolution succeeds with 56 packages.
 - Local Windows-environment discovery: no Parallels, VMware, UTM, VirtualBox, tart, QEMU, Wine, or Windows VM image found. Docker is installed but its daemon is unavailable and cannot provide a Windows desktop kernel on macOS. Tailscale CLI could not reach its local daemon, so no existing Windows peer was verified.
+- A second environment audit found only stopped ARM Linux Colima instances. The GitHub repository has no existing workflow or registered Windows runner; the AWS SSO and GCP sessions are expired. `.github/workflows/windows-ci.yml` is actionlint-clean and ready to build/smoke on `windows-2022` after push is explicitly authorized, but it has not been run and cannot replace target Windows 10/11 interaction evidence. All PowerShell files parse with official PowerShell 7.6.3, native quality/build commands now fail closed on non-zero exit codes, and the hashed lock passes pip's `--require-hashes` dry run on the current platform.
 
 ## Blocked or unverified
 
-- Real Windows installation/E2E remains unverified because no interactive Windows 10/11 environment was found. This is the first goal-turn observation of this blocker and the goal remains active; code-level mocks are not substituted for this evidence.
+- Real Windows installation/E2E remains unverified because no interactive Windows 10/11 environment was found. This is the second consecutive goal-turn observation of the same blocker and the goal remains active; code-level mocks and the unexecuted Windows Server workflow are not substituted for this evidence.
 - Safe Gemini/SMTP credentials and a labelled accuracy sample were not found or accessed; live accuracy, live cost, and live delivery remain unmeasured rather than passed.

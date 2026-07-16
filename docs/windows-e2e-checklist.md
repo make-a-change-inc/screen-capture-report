@@ -2,7 +2,7 @@
 
 Run on a clean Windows 10 22H2 or Windows 11 x64 user account. Save command output, screenshots, the generated installer/hash, redacted application logs, and redacted report artifacts under `e2e-evidence/<date>/`. Never commit credentials, screenshots containing real personal data, or decrypted reports.
 
-1. Run `scripts/build_windows.ps1`; record Python version, test output, artifact names, sizes, and SHA-256 hashes.
+1. Run `scripts/build_windows.ps1`; record Python version, test output, artifact names, sizes, and SHA-256 hashes. If the branch has been explicitly authorized for push, retain the `Windows verification` Actions artifact too; its Windows Server smoke is supporting evidence, not target-desktop E2E.
 2. Install per-user without elevation. Confirm Start Menu entry and that startup remains opt-in.
 3. Launch. Before consent, confirm no capture file or `captured` row appears.
 4. Complete onboarding with a dedicated test Gemini credential and synthetic test account. Confirm the key is in Windows Credential Manager and absent from config, DB, logs, and package files.

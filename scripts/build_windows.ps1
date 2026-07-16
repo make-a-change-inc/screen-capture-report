@@ -1,21 +1,51 @@
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @()
+    )
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath exited with code $LASTEXITCODE"
+    }
+}
+
 if ($env:OS -ne "Windows_NT") {
     throw "This build must run on Windows 10/11. PyInstaller cannot cross-build Windows binaries."
 }
 
-py -3.12 -m venv .venv
-& .\.venv\Scripts\python.exe -m pip install --upgrade pip
-& .\.venv\Scripts\python.exe -m pip install -r requirements-lock.txt
-& .\.venv\Scripts\python.exe -m ruff check src tests
-& .\.venv\Scripts\python.exe -m mypy src
-& .\.venv\Scripts\python.exe -m pytest
-& .\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm ScreenCaptureReport.spec
+$pyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
+if ($pyLauncher) {
+    Invoke-NativeCommand -FilePath $pyLauncher.Source -ArgumentList @("-3.12", "-m", "venv", ".venv")
+} else {
+    $bootstrapPython = (Get-Command python.exe -ErrorAction Stop).Source
+    $version = & $bootstrapPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    if ($LASTEXITCODE -ne 0 -or $version -ne "3.12") {
+        throw "Python 3.12 is required"
+    }
+    Invoke-NativeCommand -FilePath $bootstrapPython -ArgumentList @("-m", "venv", ".venv")
+}
+
+$python = (Resolve-Path ".\.venv\Scripts\python.exe").Path
+Invoke-NativeCommand -FilePath $python -ArgumentList @(
+    "-m", "pip", "install", "--require-hashes", "-r", "requirements-lock.txt"
+)
+Invoke-NativeCommand -FilePath $python -ArgumentList @("-m", "ruff", "check", "src", "tests")
+Invoke-NativeCommand -FilePath $python -ArgumentList @("-m", "mypy", "src")
+Invoke-NativeCommand -FilePath $python -ArgumentList @("-m", "pytest")
+Invoke-NativeCommand -FilePath $python -ArgumentList @(
+    "-m", "PyInstaller", "--clean", "--noconfirm", "ScreenCaptureReport.spec"
+)
+
+if (-not (Test-Path "dist\ScreenCaptureReport\ScreenCaptureReport.exe")) {
+    throw "PyInstaller did not produce the expected executable"
+}
 
 $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
 if ($iscc) {
-    & $iscc.Source installer\ScreenCaptureReport.iss
+    Invoke-NativeCommand -FilePath $iscc.Source -ArgumentList @("installer\ScreenCaptureReport.iss")
     Write-Host "Installer created under dist\installer"
 } else {
     $package = "dist\zip-package"
