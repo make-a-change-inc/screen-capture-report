@@ -16,6 +16,7 @@ $env:SCREEN_CAPTURE_REPORT_DATA_DIR = $dataDir
 $env:SCREEN_CAPTURE_REPORT_STARTUP_DIAGNOSTICS = "1"
 $process = $null
 $secondProcess = $null
+$trayProcess = $null
 
 try {
     $process = Start-Process $exe -PassThru
@@ -97,26 +98,95 @@ try {
         throw "The rejected second process exited with code $($secondProcess.ExitCode)"
     }
 
+    $firstProcessRunning = -not $process.HasExited
+    if ($firstProcessRunning) {
+        Stop-Process -Id $process.Id -Force
+        Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+    }
+
+    $seedCode = @'
+import os
+from pathlib import Path
+
+from src.config import DPAPIFileSecretStore, SettingsStore
+
+data_dir = Path(os.environ["SCREEN_CAPTURE_REPORT_DATA_DIR"])
+settings_store = SettingsStore(data_dir / "config.json")
+settings = settings_store.load()
+settings.grant_consent()
+settings_store.save(settings)
+
+secrets = DPAPIFileSecretStore(data_dir / "secrets.dpapi.json")
+for key, value in {
+    "gemini_api_key": "synthetic-ci-key",
+    "employee_id": "synthetic-ci-user",
+    "department": "synthetic-ci-department",
+    "privacy_contact": "synthetic-ci-contact",
+}.items():
+    secrets.set(key, value)
+'@
+    $seedCode | & .\.venv\Scripts\python.exe -
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to seed synthetic tray smoke configuration"
+    }
+
+    $trayEvidencePath = Join-Path $dataDir "tray-evidence.json"
+    Remove-Item $trayEvidencePath -Force -ErrorAction SilentlyContinue
+    $env:SCREEN_CAPTURE_REPORT_TRAY_EVIDENCE = "1"
+    $trayProcess = Start-Process $exe -PassThru
+    $trayDeadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+    while ((Get-Date) -lt $trayDeadline -and -not (Test-Path $trayEvidencePath)) {
+        if ($trayProcess.HasExited) {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not (Test-Path $trayEvidencePath)) {
+        $trayProcess.Refresh()
+        if ($trayProcess.HasExited) {
+            throw "Tray smoke process exited with code $($trayProcess.ExitCode)"
+        }
+        throw "Packaged tray setup evidence was not created within $StartupTimeoutSeconds seconds"
+    }
+    $trayEvidence = Get-Content $trayEvidencePath -Raw | ConvertFrom-Json
+    if ($trayEvidence.visible -ne $true) {
+        throw "Packaged tray setup did not request a visible notification icon"
+    }
+    if ($trayEvidence.service_started -ne $true) {
+        throw "Capture service started without successful tray setup"
+    }
+    if ($trayProcess.HasExited) {
+        throw "Packaged tray process exited after successful tray setup"
+    }
+
     New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
+    Copy-Item $trayEvidencePath (Join-Path $EvidenceDirectory "tray-evidence.json") -Force
     [PSCustomObject]@{
         Executable = $exe.Path
         DataDirectory = $dataDir
-        FirstProcessRunning = -not $process.HasExited
+        FirstProcessRunning = $firstProcessRunning
         SecondProcessExitCode = $secondProcess.ExitCode
         CapturePausedBeforeConsent = $config.capture_paused
         ConsentVersionBeforeOnboarding = $config.consent_version
         CaptureRowsBeforeConsent = [int]$captureCount
         CaptureFilesBeforeConsent = $captureFiles.Count
+        TrayVisibleRequested = $trayEvidence.visible
+        TrayServiceStarted = $trayEvidence.service_started
+        TrayProcessRunning = -not $trayProcess.HasExited
         Timestamp = (Get-Date).ToUniversalTime().ToString("o")
     } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory "startup-smoke.json")
 } finally {
+    Remove-Item Env:SCREEN_CAPTURE_REPORT_TRAY_EVIDENCE -ErrorAction SilentlyContinue
     if ($secondProcess -and -not $secondProcess.HasExited) {
         Stop-Process -Id $secondProcess.Id -Force -ErrorAction SilentlyContinue
     }
     if ($process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
+    if ($trayProcess -and -not $trayProcess.HasExited) {
+        Stop-Process -Id $trayProcess.Id -Force -ErrorAction SilentlyContinue
+    }
 }
 
-Write-Host "Startup, pre-consent fail-closed, and single-instance smoke passed."
-Write-Host "Interactive tray, capture, DPAPI, Win+L, and report E2E remain required."
+Write-Host "Startup, pre-consent fail-closed, single-instance, and packaged tray setup smoke passed."
+Write-Host "Interactive tray visibility, capture, Win+L, and report E2E remain required."

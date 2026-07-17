@@ -1,5 +1,5 @@
 #define MyAppName "Screen Capture Report"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.2.1"
 #define MyAppExeName "ScreenCaptureReport.exe"
 
 [Setup]

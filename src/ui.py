@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import logging
+import os
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Any
 
@@ -14,6 +18,8 @@ from src.platform_win import WindowsPlatform
 from src.reporting import ReportService
 from src.service import RuntimeService
 from src.utils import get_resource_path
+
+logger = logging.getLogger(__name__)
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -66,6 +72,7 @@ class WindowsTrayUI:
         self.platform = platform_api
         self.autostart = autostart
         self.icon: Any | None = None
+        self._tray_startup_error: str | None = None
 
     def run_onboarding(self) -> bool:
         import tkinter as tk
@@ -223,18 +230,86 @@ class WindowsTrayUI:
         icon = pystray.Icon(
             "ScreenCaptureReport",
             self._status_icon(running=not self.service.paused),
-            "Screen Capture Report - 取得中",
+            "Screen Capture Report - 起動中",
             menu,
         )
         self.icon = icon
 
-        def setup(_icon: Any) -> None:
+        # A custom pystray setup replaces its default setup, so it must set
+        # visible explicitly. The runtime service starts only after that call.
+        icon.run(setup=self._tray_setup)
+        if self._tray_startup_error:
+            raise RuntimeError(f"tray_startup_failed:{self._tray_startup_error}")
+
+    def _tray_setup(self, icon: Any) -> None:
+        try:
+            icon.visible = True
+            if not icon.visible:
+                raise RuntimeError("tray_visibility_not_confirmed")
             self.service.start()
             self._refresh_icon()
+        except Exception as exc:
+            self._tray_startup_error = type(exc).__name__
+            logger.critical(
+                "Tray startup failed exception_type=%s",
+                self._tray_startup_error,
+            )
+            self._write_tray_evidence(
+                visible=bool(getattr(icon, "visible", False)),
+                service_started=False,
+                error_type=self._tray_startup_error,
+            )
+            self.platform.notify(
+                "Screen Capture Report",
+                "トレイアイコンを表示できないため、画面取得を開始しませんでした。",
+            )
+            try:
+                self.service.stop()
+            except Exception as stop_exc:
+                logger.error(
+                    "Service cleanup after tray failure failed exception_type=%s",
+                    type(stop_exc).__name__,
+                )
+            icon.stop()
+            return
 
-        # pystray invokes setup only after the visible tray icon is ready, so
-        # the first automatic capture never precedes the collection indicator.
-        icon.run(setup=setup)
+        self._write_tray_evidence(
+            visible=True,
+            service_started=True,
+            error_type=None,
+        )
+
+    def _write_tray_evidence(
+        self,
+        *,
+        visible: bool,
+        service_started: bool,
+        error_type: str | None,
+    ) -> None:
+        if os.environ.get("SCREEN_CAPTURE_REPORT_TRAY_EVIDENCE") != "1":
+            return
+        try:
+            destination = self.settings_store.path.parent / "tray-evidence.json"
+            temporary = destination.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "visible": visible,
+                        "service_started": service_started,
+                        "error_type": error_type,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            os.replace(temporary, destination)
+        except Exception as exc:
+            logger.error(
+                "Tray evidence write failed exception_type=%s",
+                type(exc).__name__,
+            )
 
     def _resume(self, *_args) -> None:
         try:

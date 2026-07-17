@@ -1,6 +1,6 @@
 [project]
 name = "screen-capture-report"
-version = "0.2.0"
+version = "0.2.1"
 description = "Privacy-first Windows workflow capture and analysis POC"
 requires-python = ">=3.11,<3.15"
 

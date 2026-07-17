@@ -1,5 +1,65 @@
-from src.config import Settings
-from src.ui import _HTMLTextExtractor, onboarding_notice
+import json
+from pathlib import Path
+
+from src.config import MemorySecretStore, Settings, SettingsStore
+from src.ui import WindowsTrayUI, _HTMLTextExtractor, onboarding_notice
+
+
+class RecordingService:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.paused = False
+
+    def start(self) -> None:
+        self.events.append("service.start")
+
+    def stop(self) -> None:
+        self.events.append("service.stop")
+
+
+class RecordingPlatform:
+    def __init__(self) -> None:
+        self.notifications: list[tuple[str, str]] = []
+
+    def notify(self, title: str, message: str) -> None:
+        self.notifications.append((title, message))
+
+
+class RecordingIcon:
+    def __init__(self, events: list[str], *, fail_visibility: bool = False) -> None:
+        self.events = events
+        self.fail_visibility = fail_visibility
+        self._visible = False
+        self.stopped = False
+
+    @property
+    def visible(self) -> bool:
+        return self._visible
+
+    @visible.setter
+    def visible(self, value: bool) -> None:
+        self.events.append(f"icon.visible={value}")
+        if self.fail_visibility:
+            raise OSError("synthetic tray failure")
+        self._visible = value
+
+    def stop(self) -> None:
+        self.events.append("icon.stop")
+        self.stopped = True
+
+
+def build_ui(tmp_path: Path, events: list[str]) -> tuple[WindowsTrayUI, RecordingPlatform]:
+    platform = RecordingPlatform()
+    ui = WindowsTrayUI(
+        service=RecordingService(events),  # type: ignore[arg-type]
+        reports=None,  # type: ignore[arg-type]
+        settings_store=SettingsStore(tmp_path / "config.json"),
+        secrets=MemorySecretStore(),
+        platform_api=platform,  # type: ignore[arg-type]
+        autostart=None,  # type: ignore[arg-type]
+    )
+    ui._refresh_icon = lambda: events.append("icon.refresh")  # type: ignore[method-assign]
+    return ui, platform
 
 
 def test_html_report_is_rendered_in_memory() -> None:
@@ -25,3 +85,46 @@ def test_onboarding_notice_discloses_collection_and_rights() -> None:
         "停止状態は再起動後も維持",
     ):
         assert required in notice
+
+
+def test_tray_becomes_visible_before_capture_service_starts(tmp_path: Path) -> None:
+    events: list[str] = []
+    ui, _platform = build_ui(tmp_path, events)
+    icon = RecordingIcon(events)
+
+    ui._tray_setup(icon)
+
+    assert events == ["icon.visible=True", "service.start", "icon.refresh"]
+    assert icon.visible
+    assert ui._tray_startup_error is None
+
+
+def test_tray_registration_failure_does_not_start_capture(tmp_path: Path) -> None:
+    events: list[str] = []
+    ui, platform = build_ui(tmp_path, events)
+    icon = RecordingIcon(events, fail_visibility=True)
+
+    ui._tray_setup(icon)
+
+    assert "service.start" not in events
+    assert events == ["icon.visible=True", "service.stop", "icon.stop"]
+    assert icon.stopped
+    assert ui._tray_startup_error == "OSError"
+    assert platform.notifications
+
+
+def test_tray_evidence_contains_only_startup_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    events: list[str] = []
+    ui, _platform = build_ui(tmp_path, events)
+    icon = RecordingIcon(events)
+    monkeypatch.setenv("SCREEN_CAPTURE_REPORT_TRAY_EVIDENCE", "1")
+
+    ui._tray_setup(icon)
+
+    evidence = json.loads((tmp_path / "tray-evidence.json").read_text(encoding="utf-8"))
+    assert evidence["visible"] is True
+    assert evidence["service_started"] is True
+    assert evidence["error_type"] is None
+    assert set(evidence) == {"visible", "service_started", "error_type", "timestamp"}

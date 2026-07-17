@@ -6,7 +6,7 @@ Run on a clean Windows 10 22H2 or Windows 11 x64 user account. Save command outp
 2. Install per-user without elevation. Confirm Start Menu entry and that startup remains opt-in.
 3. Launch. Before consent, confirm no capture file or `captured` row appears.
 4. Complete onboarding with a dedicated test Gemini credential and synthetic test account. Confirm the key is in Windows Credential Manager and absent from config, DB, logs, and package files.
-5. Confirm green tray state, pause/resume state change, and grey paused icon.
+5. Confirm the icon appears in the Windows notification area (including the `^` overflow) before capture starts, the tooltip says `Screen Capture Report - 取得中`, pause/resume changes the state, and the paused icon is grey. Restart Windows Explorer and confirm the visible icon is re-registered; exit the app and confirm the icon disappears.
 6. With a synthetic test window active, collect at least five automatic captures. Confirm eligible timestamp deltas are 55–65 seconds. Confirm a weekend/non-workday and an invalid overnight schedule cannot create an automatic eligible period.
 7. Exercise active-window and all-monitor modes with synthetic content. Put an allowed window in front and an excluded password-manager window on monitor 2; confirm the entire all-monitor interval fails closed before pixels are read. Confirm allowed captures are encrypted at rest and cannot be opened as PNG files.
 8. Open an excluded process/title and an access-denied synthetic process. Confirm status `excluded`, no capture payload, and only an opaque rule ID—never the process/title value—in DB/logs.
