@@ -6,7 +6,7 @@ Updated: 2026-07-16
 
 - Branch: `blushup-windows`, created from fetched `origin/main` at `c6ce059bcbd513fc88c10810fc62f43c9d61f543`.
 - Fable 5 Grill-me review: pass; decisions captured in `docs/decision-record.md`.
-- Current phase: Windows runtime and local verification complete; real Windows execution evidence remains unavailable.
+- Current phase: Windows runtime, CI, and packaged tray setup verification complete; the user has an interactive UTM Windows environment and must confirm the corrected 0.2.1 icon visually.
 
 ## Open items
 
@@ -39,10 +39,12 @@ Updated: 2026-07-16
 - Run `29504066913` reproduced a pre-config packaged exception: the process remained responsive in an `Unhandled exception in script` window and the requested data directory contained only an empty `app.log`. CI startup diagnostics now record only the exception class and traceback frame basenames/lines/functions—never the exception message, locals, or full paths—and exit without leaving a modal dialog so the exact failing startup frame can be recovered safely.
 - Run `29504378172` localized the packaged exception to `WindowsDPAPIProtector.protect` writing the initial encrypted key. The implementation incorrectly indexed `CryptProtectData` as though it returned the same tuple as `CryptUnprotectData`; pywin32 returns protected `bytes` directly while unprotect returns `(description, bytes)`. The wrapper and a contract regression test now match those asymmetric return types.
 - Run `29504601201` passed on GitHub-hosted Windows: dependency installation, ruff, mypy, all 59 tests, PyInstaller, Inno Setup installer creation, packaged pre-consent fail-closed checks, DPAPI initial-key creation, named-mutex single-instance rejection, evidence collection, and artifact upload. The uploaded artifact ID is `8377952597` and its archive SHA-256 is `a2843f6c4376d85506f8d80b8cfb903068956905d40e27177885f12167521402`. The workflow now also prints compact executable/installer hashes and startup-smoke JSON directly into the run log for independently readable evidence on the next run.
+- Interactive UTM execution of 0.2.0 exposed a tray regression: the packaged process remained alive after onboarding but no notification icon was registered. The custom pystray setup callback replaced pystray's default `visible = True` callback and did not perform that required assignment. Commit `d04728c` now makes the icon visible before starting the capture service, fails closed if visibility setup raises, records opt-in non-sensitive tray smoke evidence, and relies on pystray's existing `TaskbarCreated` handler for Explorer restarts.
+- Run `29594165022` passed on GitHub-hosted Windows: PowerShell parsing, ruff, mypy, all 62 tests, PyInstaller, Inno Setup 0.2.1 creation, pre-consent fail-closed behavior, DPAPI seed, single-instance rejection, and packaged tray setup. Its smoke evidence recorded `TrayVisibleRequested=true`, `TrayServiceStarted=true`, and `TrayProcessRunning=true`. The installer is `ScreenCaptureReport-Setup-0.2.1-x64.exe`, size `28572504`, SHA-256 `784A5B44FA1613274276A577A1B9C6851F5C19E522EF108ABA56FE3FCD43CAB2`; artifact ID `8412349863`.
 
 ## Blocked or unverified
 
-- Real Windows installation/E2E remains unverified because no interactive Windows 10/11 environment was found. The user will provide a separate Mac running Windows through UTM for this target-desktop verification. Code-level mocks and Windows Server CI are not substituted for that evidence.
+- An interactive Windows environment is now available through UTM. The original 0.2.0 icon absence is reproduced and fixed in 0.2.1, but user-visible notification-area registration, pause/resume color, Explorer restart recovery, and exit removal still require confirmation in that UTM session. Code-level tests and Windows Server CI are not substituted for this visual evidence.
 - Safe Gemini/SMTP credentials and a labelled accuracy sample were not found or accessed; live accuracy, live cost, and live delivery remain unmeasured rather than passed.
 
 ## Exact unblock and rerun procedure
