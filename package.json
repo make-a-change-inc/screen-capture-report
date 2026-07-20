@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node --check worker/index.js",
     "check": "node --check worker/index.js",
     "test": "node --test test/*.test.mjs"
   }
