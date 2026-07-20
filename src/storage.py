@@ -171,6 +171,17 @@ class Database:
                     updated_at TEXT NOT NULL,
                     UNIQUE(kind, period_start)
                 );
+
+                CREATE TABLE IF NOT EXISTS report_sync (
+                    report_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TEXT,
+                    error_code TEXT,
+                    synced_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
+                );
                 """
             )
             report_columns = {
@@ -637,6 +648,69 @@ class Database:
             if report is not None:
                 reports.append(report)
         return reports
+
+    def report_sync_state(self, report_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM report_sync WHERE report_id=?", (report_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def queue_report_sync(self, report_id: str) -> None:
+        now = iso()
+        with self._lock, self._connection:
+            self._connection.execute(
+                """INSERT INTO report_sync (
+                    report_id, status, retry_count, next_retry_at, error_code,
+                    synced_at, updated_at
+                ) VALUES (?, 'pending', 0, NULL, NULL, NULL, ?)
+                ON CONFLICT(report_id) DO NOTHING""",
+                (report_id, now),
+            )
+
+    def pending_report_syncs(self, at: datetime | None = None) -> list[str]:
+        threshold = iso(at)
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT report_id FROM report_sync
+                   WHERE status IN ('pending', 'failed')
+                     AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                   ORDER BY updated_at LIMIT 20""",
+                (threshold,),
+            ).fetchall()
+        return [str(row["report_id"]) for row in rows]
+
+    def mark_report_sync(
+        self,
+        report_id: str,
+        *,
+        success: bool,
+        error_code: str | None = None,
+        retry_at: datetime | None = None,
+    ) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """UPDATE report_sync SET status=?, error_code=?,
+                   retry_count=retry_count+1, next_retry_at=?, synced_at=?, updated_at=?
+                   WHERE report_id=?""",
+                (
+                    "synced" if success else "failed",
+                    error_code,
+                    iso(retry_at) if retry_at else None,
+                    iso() if success else None,
+                    iso(),
+                    report_id,
+                ),
+            )
+
+    def mark_report_sync_auth_required(self, report_id: str) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """UPDATE report_sync SET status='auth_required',
+                   error_code='http_401', retry_count=retry_count+1,
+                   next_retry_at=NULL, updated_at=? WHERE report_id=?""",
+                (iso(), report_id),
+            )
 
     def record_send(
         self,

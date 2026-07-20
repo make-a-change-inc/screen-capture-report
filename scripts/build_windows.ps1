@@ -28,12 +28,12 @@ if ($env:OS -ne "Windows_NT") {
 
 $pyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
 if ($pyLauncher) {
-    Invoke-NativeCommand -FilePath $pyLauncher.Source -ArgumentList @("-3.12", "-m", "venv", ".venv")
+    Invoke-NativeCommand -FilePath $pyLauncher.Source -ArgumentList @("-3", "-m", "venv", ".venv")
 } else {
     $bootstrapPython = (Get-Command python.exe -ErrorAction Stop).Source
-    $version = & $bootstrapPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-    if ($LASTEXITCODE -ne 0 -or $version -ne "3.12") {
-        throw "Python 3.12 is required"
+    $supported = & $bootstrapPython -c "import sys; print(int((3, 11) <= sys.version_info[:2] < (3, 15)))"
+    if ($LASTEXITCODE -ne 0 -or $supported -ne "1") {
+        throw "Python 3.11 through 3.14 is required"
     }
     Invoke-NativeCommand -FilePath $bootstrapPython -ArgumentList @("-m", "venv", ".venv")
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 APP_NAME = "ScreenCaptureReport"
 APP_SERVICE_NAME = "ScreenCaptureReport"
 CONSENT_VERSION = "windows-poc-v2"
+SERVER_SYNC_CONSENT_VERSION = "server-sync-v1"
 PURPOSE_LIMITATION = (
     "このアプリは業務改善のために利用します。人事評価、査定、懲戒、"
     "従業員ランキング、常時監視には利用しません。"

@@ -35,3 +35,6 @@ dist/
 htmlcov/
 .coverage
 e2e-evidence/
+node_modules/
+.wrangler/
+.test-deps/

@@ -16,6 +16,7 @@ from src.constants import (
     DEFAULT_CATEGORIES,
     DEFAULT_EXCLUDED_PROCESSES,
     DEFAULT_EXCLUDED_TITLE_KEYWORDS,
+    SERVER_SYNC_CONSENT_VERSION,
 )
 
 REQUIRED_ONBOARDING_SECRETS = ("gemini_api_key", "employee_id", "department", "privacy_contact")
@@ -29,6 +30,8 @@ STORED_SECRET_KEYS = (
     "employee_id",
     "department",
     "privacy_contact",
+    "admin_upload_token",
+    "admin_sites_bypass_token",
 )
 
 
@@ -78,6 +81,10 @@ class Settings:
     consented_at: str = ""
     token_input_jpy_per_million: float = 0.0
     token_output_jpy_per_million: float = 0.0
+    admin_api_url: str = ""
+    server_sync_enabled: bool = False
+    server_sync_consent_version: str = ""
+    server_sync_consented_at: str = ""
 
     @property
     def has_consent(self) -> bool:
@@ -93,6 +100,22 @@ class Settings:
         self.consented_at = ""
         self.capture_paused = True
 
+    @property
+    def has_server_sync_consent(self) -> bool:
+        return (
+            self.server_sync_consent_version == SERVER_SYNC_CONSENT_VERSION
+            and bool(self.server_sync_consented_at)
+        )
+
+    def grant_server_sync_consent(self) -> None:
+        self.server_sync_consent_version = SERVER_SYNC_CONSENT_VERSION
+        self.server_sync_consented_at = datetime.now(UTC).isoformat()
+
+    def revoke_server_sync_consent(self) -> None:
+        self.server_sync_consent_version = ""
+        self.server_sync_consented_at = ""
+        self.server_sync_enabled = False
+
     def validate(self) -> None:
         if self.capture_mode not in {"active_window", "all_screens"}:
             raise ValueError("capture_mode must be active_window or all_screens")
@@ -104,6 +127,17 @@ class Settings:
             raise ValueError("idle_threshold_seconds must be at least 60")
         if self.max_image_edge < 320:
             raise ValueError("max_image_edge must be at least 320")
+        if self.server_sync_enabled:
+            if not self.has_server_sync_consent:
+                raise ValueError("server sync requires explicit consent")
+            if not self.admin_api_url:
+                raise ValueError("server sync requires admin_api_url")
+            if not (
+                self.admin_api_url.startswith("https://")
+                or self.admin_api_url.startswith("http://localhost")
+                or self.admin_api_url.startswith("http://127.0.0.1")
+            ):
+                raise ValueError("admin_api_url must use HTTPS")
         if not 0 <= self.capture_retention_hours <= 24:
             raise ValueError("capture_retention_hours must be between 0 and 24")
         if self.log_retention_days < 1 or self.report_retention_days < 1:

@@ -24,8 +24,10 @@ from src.reporting import ReportService
 from src.security import EncryptedFileStore, EncryptionService
 from src.service import RuntimeService
 from src.storage import Database
+from src.sync import ManagementReportSync
 from src.ui import WindowsTrayUI
 from src.utils import configure_logging
+from src.viewer import EmployeeArchive
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +159,11 @@ def _run_application(
         notifier=notifier,
         secrets=secrets,
     )
+    report_sync = ManagementReportSync(
+        database=database,
+        settings_provider=settings_provider,
+        secrets=secrets,
+    )
     service = RuntimeService(
         database=database,
         capturer=capturer,
@@ -164,7 +171,9 @@ def _run_application(
         reports=reports,
         settings_provider=settings_provider,
         pause_state_setter=pause_state_setter,
+        report_sync=report_sync,
     )
+    employee_archive = EmployeeArchive(database=database, files=files, reports=reports)
     ui = WindowsTrayUI(
         service=service,
         reports=reports,
@@ -172,6 +181,7 @@ def _run_application(
         secrets=secrets,
         platform_api=platform_api,
         autostart=AutostartManager(),
+        employee_archive=employee_archive,
     )
 
     try:

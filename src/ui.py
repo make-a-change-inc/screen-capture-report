@@ -7,9 +7,10 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from html.parser import HTMLParser
+from io import BytesIO
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 
 from src.autostart import AutostartManager
 from src.config import SecretBackend, Settings, SettingsStore
@@ -18,6 +19,7 @@ from src.platform_win import WindowsPlatform
 from src.reporting import ReportService
 from src.service import RuntimeService
 from src.utils import get_resource_path
+from src.viewer import EmployeeArchive, EmployeeArchiveDay
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,7 @@ class WindowsTrayUI:
         secrets: SecretBackend,
         platform_api: WindowsPlatform,
         autostart: AutostartManager,
+        employee_archive: EmployeeArchive | None = None,
     ):
         self.service = service
         self.reports = reports
@@ -71,6 +74,7 @@ class WindowsTrayUI:
         self.secrets = secrets
         self.platform = platform_api
         self.autostart = autostart
+        self.employee_archive = employee_archive
         self.icon: Any | None = None
         self._tray_startup_error: str | None = None
 
@@ -219,7 +223,8 @@ class WindowsTrayUI:
             pystray.MenuItem("今すぐ解析", self._analyze_now),
             pystray.MenuItem("日報を生成", self._daily_now),
             pystray.MenuItem("週次レポートを生成", self._weekly_now),
-            pystray.MenuItem("最新の日報を開く", self._open_latest_daily),
+            pystray.MenuItem("管理サーバーへ同期", self._sync_now),
+            pystray.MenuItem("レポートと画像を見る", self._open_employee_archive),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("今日の画像を削除", self._delete_today),
             pystray.MenuItem("データフォルダを開く", self._open_data),
@@ -336,6 +341,9 @@ class WindowsTrayUI:
     def _weekly_now(self, *_args) -> None:
         self._background("週次レポート生成", lambda: self.service.weekly_report_now())
 
+    def _sync_now(self, *_args) -> None:
+        self._background("管理サーバー同期", lambda: self.service.sync_reports_now())
+
     def _delete_today(self, *_args) -> None:
         self._background("画像削除", lambda: self.service.delete_today_captures())
 
@@ -354,6 +362,187 @@ class WindowsTrayUI:
         latest = reports[-1]
         payload = latest["payload"] or ""
         threading.Thread(target=self._show_report_window, args=(payload,), daemon=True).start()
+
+    def _open_employee_archive(self, *_args) -> None:
+        if self.employee_archive is None:
+            self.platform.notify("本人アーカイブ", "アーカイブを利用できません")
+            return
+        threading.Thread(target=self._show_employee_archive_window, daemon=True).start()
+
+    def _show_employee_archive_window(self) -> None:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+
+        if self.employee_archive is None:
+            return
+        archive = self.employee_archive
+        try:
+            days = archive.list_days()
+        except Exception as exc:
+            self.platform.notify("本人アーカイブ", f"読込に失敗しました: {type(exc).__name__}")
+            return
+
+        root = tk.Tk()
+        root.title("Screen Capture Report - 本人アーカイブ")
+        root.geometry("1120x760")
+        root.minsize(860, 600)
+
+        header = tk.Frame(root)
+        header.pack(fill="x", padx=14, pady=(12, 6))
+        tk.Label(header, text="本人アーカイブ", font=("Segoe UI", 17, "bold")).pack(
+            side="left"
+        )
+        tk.Label(
+            header,
+            text="復号内容はこの画面のメモリ内だけで表示します",
+            fg="#4b5563",
+        ).pack(side="right")
+
+        body = tk.PanedWindow(root, orient="horizontal", sashwidth=5)
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        date_frame = tk.Frame(body)
+        content_frame = tk.Frame(body)
+        body.add(date_frame, minsize=190)
+        body.add(content_frame, minsize=620)
+
+        tk.Label(date_frame, text="日付", anchor="w", font=("Segoe UI", 10, "bold")).pack(
+            fill="x", pady=(0, 4)
+        )
+        day_list = tk.Listbox(date_frame, exportselection=False)
+        day_list.pack(fill="both", expand=True)
+
+        notebook = ttk.Notebook(content_frame)
+        notebook.pack(fill="both", expand=True)
+        report_tab = tk.Frame(notebook)
+        capture_tab = tk.Frame(notebook)
+        notebook.add(report_tab, text="日報")
+        notebook.add(capture_tab, text="キャプチャ")
+        management_tab = tk.Frame(notebook)
+        notebook.add(management_tab, text="管理者に共有される内容")
+
+        report_text = tk.Text(report_tab, wrap="word", font=("Segoe UI", 10))
+        report_scroll = tk.Scrollbar(report_tab, command=report_text.yview)
+        report_text.configure(yscrollcommand=report_scroll.set)
+        report_scroll.pack(side="right", fill="y")
+        report_text.pack(fill="both", expand=True, padx=8, pady=8)
+
+        capture_split = tk.PanedWindow(capture_tab, orient="horizontal", sashwidth=5)
+        capture_split.pack(fill="both", expand=True, padx=8, pady=8)
+        capture_list = tk.Listbox(capture_split, exportselection=False)
+        preview = tk.Label(
+            capture_split,
+            text="画像を選択してください",
+            bg="#111827",
+            fg="white",
+            anchor="center",
+        )
+        capture_split.add(capture_list, minsize=220)
+        capture_split.add(preview, minsize=480)
+
+        management_split = tk.PanedWindow(management_tab, orient="horizontal", sashwidth=5)
+        management_split.pack(fill="both", expand=True, padx=8, pady=8)
+        management_list = tk.Listbox(management_split, exportselection=False)
+        management_text = tk.Text(management_split, wrap="word", font=("Segoe UI", 10))
+        management_split.add(management_list, minsize=260)
+        management_split.add(management_text, minsize=500)
+        management_previews = archive.list_management_share_previews()
+
+        state: dict[str, Any] = {"day": None, "captures": [], "photo": None}
+
+        def select_day(_event: Any = None) -> None:
+            selection = day_list.curselection()
+            if not selection:
+                return
+            selected_day: EmployeeArchiveDay = days[selection[0]]
+            state["day"] = selected_day
+            state["captures"] = list(selected_day.captures)
+            report_text.configure(state="normal")
+            report_text.delete("1.0", "end")
+            if selected_day.report_html:
+                extractor = _HTMLTextExtractor()
+                extractor.feed(selected_day.report_html)
+                report_text.insert("1.0", extractor.text())
+            else:
+                report_text.insert("1.0", "この日の日報はまだ生成されていません。")
+            report_text.configure(state="disabled")
+            capture_list.delete(0, "end")
+            for item in selected_day.captures:
+                captured_at = datetime.fromisoformat(item.captured_at).astimezone()
+                capture_list.insert("end", f"{captured_at:%H:%M:%S}  {item.status}")
+            preview.configure(image="", text="画像を選択してください")
+            state["photo"] = None
+
+        def select_capture(_event: Any = None) -> None:
+            selection = capture_list.curselection()
+            captures = state["captures"]
+            if not selection or selection[0] >= len(captures):
+                return
+            try:
+                payload = archive.read_capture(captures[selection[0]])
+                image = Image.open(BytesIO(payload))
+                image.load()
+                image.thumbnail((800, 620), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(image)
+                state["photo"] = photo
+                preview.configure(image=photo, text="")
+            except Exception as exc:
+                preview.configure(image="", text="画像を表示できません")
+                state["photo"] = None
+                messagebox.showerror(
+                    "画像エラー",
+                    f"復号または表示に失敗しました: {type(exc).__name__}",
+                )
+
+        for item in days:
+            suffix = []
+            if item.report_html:
+                suffix.append("日報")
+            if item.captures:
+                suffix.append(f"画像{len(item.captures)}")
+            day_list.insert("end", f"{item.day.isoformat()}  {' / '.join(suffix)}")
+        day_list.bind("<<ListboxSelect>>", select_day)
+        capture_list.bind("<<ListboxSelect>>", select_capture)
+        for management_item in management_previews:
+            state_label = {
+                "synced": "同期済み",
+                "pending": "送信待ち",
+                "failed": "再試行待ち",
+                "auth_required": "再認証が必要",
+                "not_queued": "未送信",
+            }.get(management_item.sync_status, management_item.sync_status)
+            draft_label = "確定" if management_item.finalized else "プレビュー"
+            management_list.insert(
+                "end",
+                f"{management_item.period_start}〜{management_item.period_end}  "
+                f"{draft_label} / {state_label}",
+            )
+
+        def select_management(_event: Any = None) -> None:
+            selection = management_list.curselection()
+            if not selection:
+                return
+            selected_management = management_previews[selection[0]]
+            extractor = _HTMLTextExtractor()
+            extractor.feed(selected_management.report_html)
+            management_text.configure(state="normal")
+            management_text.delete("1.0", "end")
+            management_text.insert("1.0", extractor.text())
+            management_text.configure(state="disabled")
+
+        management_list.bind("<<ListboxSelect>>", select_management)
+        if management_previews:
+            management_list.selection_set(0)
+            select_management()
+        else:
+            management_text.insert("1.0", "管理者向け週次レポートはまだ生成されていません。")
+            management_text.configure(state="disabled")
+        if days:
+            day_list.selection_set(0)
+            select_day()
+        else:
+            report_text.insert("1.0", "表示できる日報または画像がありません。")
+            report_text.configure(state="disabled")
+        root.mainloop()
 
     @staticmethod
     def _show_report_window(payload: str) -> None:
@@ -413,6 +602,7 @@ class WindowsTrayUI:
             ("離席判定（秒）", "idle", str(settings.idle_threshold_seconds)),
             ("ログ保持（日）", "log_days", str(settings.log_retention_days)),
             ("レポート保持（日）", "report_days", str(settings.report_retention_days)),
+            ("管理API URL", "admin_api_url", settings.admin_api_url),
         ]
         for label, key, current in fields:
             row = tk.Frame(form)
@@ -424,9 +614,13 @@ class WindowsTrayUI:
 
         api_key = tk.StringVar()
         smtp_password = tk.StringVar()
+        admin_upload_token = tk.StringVar()
+        admin_sites_bypass_token = tk.StringVar()
         for label, variable in (
             ("新しいGemini APIキー", api_key),
             ("新しいSMTPパスワード", smtp_password),
+            ("管理APIアップロードトークン", admin_upload_token),
+            ("Sites接続トークン", admin_sites_bypass_token),
         ):
             row = tk.Frame(form)
             row.pack(fill="x", pady=5)
@@ -443,6 +637,12 @@ class WindowsTrayUI:
         tk.Checkbutton(form, text="Windowsログイン時に起動", variable=autostart).pack(
             anchor="w", pady=8
         )
+        server_sync = tk.BooleanVar(value=settings.server_sync_enabled)
+        tk.Checkbutton(
+            form,
+            text="確定済み週次管理レポートを管理Webへ送信する",
+            variable=server_sync,
+        ).pack(anchor="w", pady=4)
 
         process_text = tk.Text(form, height=4)
         process_text.insert("1.0", "\n".join(settings.excluded_processes))
@@ -470,6 +670,20 @@ class WindowsTrayUI:
                 settings.idle_threshold_seconds = int(values["idle"].get())
                 settings.log_retention_days = int(values["log_days"].get())
                 settings.report_retention_days = int(values["report_days"].get())
+                settings.admin_api_url = values["admin_api_url"].get().strip()
+                if server_sync.get() and not settings.has_server_sync_consent:
+                    approved = messagebox.askyesno(
+                        "管理Webへの送信同意",
+                        "管理者向け週次レポート（従業員識別子、部署、期間、業務集計、"
+                        "改善提案）を管理Webへ送信します。本人日報、画面画像、"
+                        "ウィンドウタイトルは送信しません。同意しますか？",
+                    )
+                    if not approved:
+                        raise ValueError("管理Webへの送信には明示同意が必要です")
+                    settings.grant_server_sync_consent()
+                if not server_sync.get():
+                    settings.revoke_server_sync_consent()
+                settings.server_sync_enabled = server_sync.get()
                 settings.capture_mode = mode.get()
                 settings.excluded_processes = [
                     item.strip()
@@ -505,6 +719,12 @@ class WindowsTrayUI:
                     self.secrets.set("gemini_api_key", api_key.get().strip())
                 if smtp_password.get().strip():
                     self.secrets.set("smtp_password", smtp_password.get().strip())
+                if admin_upload_token.get().strip():
+                    self.secrets.set("admin_upload_token", admin_upload_token.get().strip())
+                if admin_sites_bypass_token.get().strip():
+                    self.secrets.set(
+                        "admin_sites_bypass_token", admin_sites_bypass_token.get().strip()
+                    )
             except Exception as exc:
                 messagebox.showerror("保存エラー", type(exc).__name__)
                 return
@@ -539,6 +759,8 @@ class WindowsTrayUI:
                 "employee_id",
                 "department",
                 "privacy_contact",
+                "admin_upload_token",
+                "admin_sites_bypass_token",
             ):
                 self.secrets.delete(key)
             messagebox.showinfo(

@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "screen-capture-report-admin",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-07-20",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "screen-capture-report-admin-db",
+      "database_id": "REPLACE_AFTER_WRANGLER_D1_CREATE"
+    }
+  ],
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

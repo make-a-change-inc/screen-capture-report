@@ -35,6 +35,7 @@ class RuntimeService:
         reports: ReportService,
         settings_provider: Callable[[], Settings],
         pause_state_setter: Callable[[bool], None] | None = None,
+        report_sync=None,
     ):
         self.database = database
         self.capturer = capturer
@@ -42,6 +43,7 @@ class RuntimeService:
         self.reports = reports
         self.settings_provider = settings_provider
         self.pause_state_setter = pause_state_setter or (lambda _paused: None)
+        self.report_sync = report_sync
         self._stop = threading.Event()
         self._state_lock = threading.RLock()
         self._paused = True
@@ -124,6 +126,11 @@ class RuntimeService:
             finalized=False,
         )
 
+    def sync_reports_now(self) -> int:
+        if self.report_sync is None:
+            return 0
+        return self.report_sync.sync_pending()
+
     def delete_today_captures(self) -> int:
         today = datetime.now().astimezone().date()
         deleted = 0
@@ -155,6 +162,7 @@ class RuntimeService:
                 self.analyzer.process_pending,
                 self._generate_due_reports,
                 self.reports.retry_failed_sends,
+                self.sync_reports_now,
                 self._run_retention_if_due,
             ):
                 try:

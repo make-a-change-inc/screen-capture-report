@@ -63,7 +63,7 @@ try {
         throw "Pre-consent configuration was not created within $StartupTimeoutSeconds seconds"
     }
 
-    $config = Get-Content $configPath -Raw | ConvertFrom-Json
+    $config = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($config.capture_paused -ne $true) {
         throw "Capture was not paused before consent"
     }
@@ -148,7 +148,7 @@ for key, value in {
         }
         throw "Packaged tray setup evidence was not created within $StartupTimeoutSeconds seconds"
     }
-    $trayEvidence = Get-Content $trayEvidencePath -Raw | ConvertFrom-Json
+    $trayEvidence = Get-Content $trayEvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($trayEvidence.visible -ne $true) {
         throw "Packaged tray setup did not request a visible notification icon"
     }

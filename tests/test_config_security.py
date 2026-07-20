@@ -82,6 +82,22 @@ def test_revoke_consent_also_forces_pause() -> None:
     assert settings.capture_paused
 
 
+def test_server_sync_requires_separate_consent_and_https() -> None:
+    settings = Settings(admin_api_url="https://reports.example.test", server_sync_enabled=True)
+    with pytest.raises(ValueError, match="explicit consent"):
+        settings.validate()
+
+    settings.grant_server_sync_consent()
+    settings.validate()
+    settings.admin_api_url = "http://reports.example.test"
+    with pytest.raises(ValueError, match="HTTPS"):
+        settings.validate()
+
+    settings.revoke_server_sync_consent()
+    assert not settings.server_sync_enabled
+    assert not settings.has_server_sync_consent
+
+
 def test_required_onboarding_secret_gate_fails_closed() -> None:
     secrets = MemorySecretStore(
         {

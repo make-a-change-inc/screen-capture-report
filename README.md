@@ -64,6 +64,8 @@ APIキーとSMTPパスワードは`config.json`やSQLiteには保存されませ
 - 日報を生成
 - 週次レポートを生成
 - 最新の日報を開く
+- レポートと画像を見る（本人日報、保持中画像、管理者共有プレビュー）
+- 管理サーバーへ同期
 - 今日の画像を削除
 - データフォルダを開く
 - 設定
@@ -119,6 +121,21 @@ macOS/Linuxでは、Windows APIをフェイク化した単体・統合・契約�
 
 目標は取得成功率95%以上、カテゴリ一致率80%以上、全API原価100円/人日以下です。ラベル、usage metadata、単価設定が不足している場合は`unmeasured`となり、合格扱いにはなりません。
 
+## 管理Web同期
+
+設定画面で管理API URL、端末アップロードトークンを入力し、`server-sync-v1`へ別途同意した場合だけ、確定済みの管理者向け週次レポートを送信します。本人日報、キャプチャ画像、ウィンドウタイトルは送信しません。
+
+管理Webのソースは`admin-web/`にあります。Cloudflare Workerが管理UIと端末APIを提供し、D1へAES-256-GCMで暗号化した週次本文を保存します。ローカル検証は以下です。
+
+```powershell
+cd admin-web
+npm install
+npm test
+npx wrangler deploy --dry-run
+```
+
+本番作成と公開には`wrangler login`によるCloudflare認証が必要です。詳細仕様は[Report Viewer and Management Sync MVP v1](docs/mvp-v1-spec.md)を参照してください。
+
 ## 実Windows E2E
 
 [Windows E2Eチェックリスト](docs/windows-e2e-checklist.md)を、クリーンなWindows 10 22H2またはWindows 11 x64環境で実行してください。少なくとも、同意前非取得、60秒周期、トレイ、一時停止、除外、離席、Win+L、オフライン再送、再起動復旧、日報、週次レポート、アンインストールを確認します。
@@ -138,7 +155,6 @@ macOS/Linuxでは、Windows APIをフェイク化した単体・統合・契約�
 - 画面の常時管理者監視
 - AI提案の自動実行
 - 3キャラクター/複数人格分析
-- サーバー集約型RBAC
 - 自動アップデート
 - コード署名、本番配布、新規有料契約
 - macOS版の維持
