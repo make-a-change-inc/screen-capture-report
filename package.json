@@ -1,0 +1,10 @@
+{
+  "name": "screen-capture-report-admin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check worker/index.js",
+    "test": "node --test test/*.test.mjs"
+  }
+}
