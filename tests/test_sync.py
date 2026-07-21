@@ -79,6 +79,7 @@ def test_sync_uploads_only_finalized_management_weekly_report(database, settings
     assert len(client.payloads) == 1
     assert client.payloads[0]["report_id"] == final_id
     assert client.payloads[0]["audience"] == "management"
+    assert client.payloads[0]["finalized"] is True
     assert "private employee detail" not in str(client.payloads)
     assert database.report_sync_state(final_id)["status"] == "synced"
 

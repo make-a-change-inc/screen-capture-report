@@ -46,6 +46,7 @@ test("management report completes the admin API round trip", async (t) => {
     revision: 1,
     kind: "weekly",
     audience: "management",
+    finalized: true,
     generated_at: "2026-07-20T00:00:00.000Z",
     report_html: "<h1>週次管理レポート</h1><p>テスト本文</p>",
     metrics: { activeMinutes: 1200, idleMinutes: 60, captureCount: 40 },
@@ -75,6 +76,13 @@ test("management report completes the admin API round trip", async (t) => {
     body: JSON.stringify({ ...report, report_id: "daily-report", kind: "daily", audience: "employee" }),
   });
   assert.equal(forbiddenDaily.status, 422);
+
+  const unfinalized = await fetch("/api/v1/device/reports/weekly-management", {
+    ...uploadInit,
+    headers: { ...uploadInit.headers, "idempotency-key": "unfinalized-report" },
+    body: JSON.stringify({ ...report, report_id: "unfinalized-report", finalized: false }),
+  });
+  assert.equal(unfinalized.status, 422);
 
   const summary = await fetch("/api/admin/summary", {
     headers: { "x-admin-key": adminKey },

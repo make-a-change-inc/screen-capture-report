@@ -183,7 +183,11 @@ async function uploadReport(request, env) {
     });
   }
   const body = JSON.parse(dec.decode(raw));
-  if ((body.kind && body.kind !== "weekly") || (body.audience && body.audience !== "management")) {
+  if (
+    (body.kind && body.kind !== "weekly")
+    || (body.audience && body.audience !== "management")
+    || body.finalized !== true
+  ) {
     return json({ error: "only_weekly_management_reports_are_accepted" }, 422);
   }
   const report = normalizeReport(body);
@@ -195,7 +199,8 @@ async function uploadReport(request, env) {
       || endAt - startAt !== 6 * 86400 * 1000
       || report.schemaVersion !== 1
       || !Number.isInteger(report.revision)
-      || report.revision < 1) {
+      || report.revision < 1
+      || !report.reportHtml.trim()) {
     return json({ error: "invalid_report" }, 400);
   }
   if (enc.encode(report.reportHtml).byteLength > 512 * 1024) {

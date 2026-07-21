@@ -116,6 +116,7 @@ class ManagementReportSync:
                     "department": self.secrets.get("department") or "",
                     "kind": "weekly",
                     "audience": "management",
+                    "finalized": True,
                     "period_start": report["period_start"],
                     "period_end": report["period_end"],
                     "report_html": report["payload"] or "",

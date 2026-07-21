@@ -542,6 +542,8 @@ class WindowsTrayUI:
         else:
             report_text.insert("1.0", "表示できる日報または画像がありません。")
             report_text.configure(state="disabled")
+        if os.environ.get("SCREEN_CAPTURE_REPORT_VIEWER_SMOKE") == "1":
+            root.after(300, root.destroy)
         root.mainloop()
 
     @staticmethod

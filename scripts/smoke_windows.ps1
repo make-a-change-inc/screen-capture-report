@@ -16,6 +16,7 @@ $env:SCREEN_CAPTURE_REPORT_DATA_DIR = $dataDir
 $env:SCREEN_CAPTURE_REPORT_STARTUP_DIAGNOSTICS = "1"
 $process = $null
 $secondProcess = $null
+$viewerProcess = $null
 $trayProcess = $null
 
 try {
@@ -130,6 +131,16 @@ for key, value in {
         throw "Unable to seed synthetic tray smoke configuration"
     }
 
+    $env:SCREEN_CAPTURE_REPORT_VIEWER_SMOKE = "1"
+    $viewerProcess = Start-Process $exe -ArgumentList "--viewer-smoke" -PassThru
+    if (-not $viewerProcess.WaitForExit(15000)) {
+        throw "Packaged employee archive viewer did not close after its smoke check"
+    }
+    if ($viewerProcess.ExitCode -ne 0) {
+        throw "Packaged employee archive viewer exited with code $($viewerProcess.ExitCode)"
+    }
+    Remove-Item Env:SCREEN_CAPTURE_REPORT_VIEWER_SMOKE -ErrorAction SilentlyContinue
+
     $trayEvidencePath = Join-Path $dataDir "tray-evidence.json"
     Remove-Item $trayEvidencePath -Force -ErrorAction SilentlyContinue
     $env:SCREEN_CAPTURE_REPORT_TRAY_EVIDENCE = "1"
@@ -170,12 +181,14 @@ for key, value in {
         ConsentVersionBeforeOnboarding = $config.consent_version
         CaptureRowsBeforeConsent = [int]$captureCount
         CaptureFilesBeforeConsent = $captureFiles.Count
+        EmployeeArchiveViewerStarted = $viewerProcess.ExitCode -eq 0
         TrayVisibleRequested = $trayEvidence.visible
         TrayServiceStarted = $trayEvidence.service_started
         TrayProcessRunning = -not $trayProcess.HasExited
         Timestamp = (Get-Date).ToUniversalTime().ToString("o")
     } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory "startup-smoke.json")
 } finally {
+    Remove-Item Env:SCREEN_CAPTURE_REPORT_VIEWER_SMOKE -ErrorAction SilentlyContinue
     Remove-Item Env:SCREEN_CAPTURE_REPORT_TRAY_EVIDENCE -ErrorAction SilentlyContinue
     if ($secondProcess -and -not $secondProcess.HasExited) {
         Stop-Process -Id $secondProcess.Id -Force -ErrorAction SilentlyContinue
@@ -183,10 +196,13 @@ for key, value in {
     if ($process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
+    if ($viewerProcess -and -not $viewerProcess.HasExited) {
+        Stop-Process -Id $viewerProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     if ($trayProcess -and -not $trayProcess.HasExited) {
         Stop-Process -Id $trayProcess.Id -Force -ErrorAction SilentlyContinue
     }
 }
 
-Write-Host "Startup, pre-consent fail-closed, single-instance, and packaged tray setup smoke passed."
+Write-Host "Startup, employee archive viewer, pre-consent fail-closed, single-instance, and packaged tray setup smoke passed."
 Write-Host "Interactive tray visibility, capture, Win+L, and report E2E remain required."

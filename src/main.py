@@ -185,6 +185,9 @@ def _run_application(
     )
 
     try:
+        if "--viewer-smoke" in sys.argv:
+            ui._show_employee_archive_window()
+            return 0
         settings = settings_provider()
         required_secrets_present = has_required_onboarding_secrets(secrets)
         if not settings.has_consent or not required_secrets_present:
