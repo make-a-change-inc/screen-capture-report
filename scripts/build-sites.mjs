@@ -2,13 +2,13 @@ import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 
 await rm("dist", { recursive: true, force: true });
 await mkdir("dist/.openai", { recursive: true });
-await cp("admin-web/worker", "dist/worker", { recursive: true });
+await cp("admin-web/worker", "dist/server", { recursive: true });
 await writeFile(
   "dist/.openai/hosting.json",
   `${JSON.stringify({
     project_id: "appgprj_6a5e36d59e7881919d073ab9466c3734",
     starter: "worker",
-    entrypoint: "worker/index.js",
+    entrypoint: "server/index.js",
     database_binding: "DB",
   }, null, 2)}\n`,
 );
@@ -19,6 +19,6 @@ await writeFile(
     version: "1.0.0",
     private: true,
     type: "module",
-    main: "worker/index.js",
+    main: "server/index.js",
   }, null, 2)}\n`,
 );
