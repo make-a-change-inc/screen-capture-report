@@ -13,7 +13,7 @@ await writeFile(
   "dist/package.json",
   `${JSON.stringify({
     name: "work-visibility-ai-admin-mock",
-    version: "1.0.0",
+    version: "1.1.0",
     private: true,
     type: "module",
     main: "server/index.js",
