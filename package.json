@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node --check admin-web/worker/index.js && node --check admin-web/worker/dashboard-page.js",
+    "build": "node --check admin-web/worker/index.js && node --check admin-web/worker/dashboard-page.js && node scripts/build-sites.mjs",
     "check": "npm run build"
   }
 }
