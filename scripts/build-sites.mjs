@@ -7,9 +7,6 @@ await writeFile(
   "dist/.openai/hosting.json",
   `${JSON.stringify({
     project_id: "appgprj_6a5e36d59e7881919d073ab9466c3734",
-    starter: "worker",
-    entrypoint: "server/index.js",
-    database_binding: "DB",
   }, null, 2)}\n`,
 );
 await writeFile(
