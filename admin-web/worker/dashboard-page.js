@@ -17,7 +17,7 @@ export const dashboardPage = `<!doctype html>
 <body>
 <div class="app">
   <aside class="sidebar" id="sidebar">
-    <div class="brand"><span class="brand-mark">WV</span><span class="brand-name">WORK VISIBILITY AI<small>Management console</small></span></div>
+    <div class="brand"><span class="brand-mark">WV</span><span class="brand-name">WORK VISIBILITY AI<small>株式会社ライトアップ</small></span></div>
     <nav class="nav" aria-label="メインナビゲーション">
       <div class="nav-label">OVERVIEW</div>
       <button class="active" data-view="dashboard"><svg viewBox="0 0 24 24"><path d="M3 11 12 3l9 8v9H3z"/><path d="M9 20v-6h6v6"/></svg>経営ダッシュボード</button>
