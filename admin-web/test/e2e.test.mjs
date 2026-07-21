@@ -7,14 +7,16 @@ import { Miniflare } from "miniflare";
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 
 test("management report completes the admin API round trip", async (t) => {
-  const adminKey = "local-admin-key";
+  const adminEmail = "admin@example.test";
+  const adminPassword = "local-admin-password";
   const mf = new Miniflare({
     compatibilityDate: "2026-07-20",
     modules: true,
     scriptPath: "worker/index.js",
     d1Databases: { DB: "screen-capture-report-test" },
     bindings: {
-      BOOTSTRAP_ADMIN_HASH: digest(adminKey),
+      ADMIN_EMAIL: adminEmail,
+      ADMIN_PASSWORD_HASH: digest(adminPassword),
       REPORT_ENCRYPTION_KEY_V1: randomBytes(32).toString("base64"),
     },
   });
@@ -25,9 +27,14 @@ test("management report completes the admin API round trip", async (t) => {
   const anonymous = await fetch("/api/admin/summary");
   assert.equal(anonymous.status, 401);
 
+  const wrongEmail = await fetch("/api/admin/summary", {
+    headers: { "x-admin-email": "other@example.test", "x-admin-password": adminPassword },
+  });
+  assert.equal(wrongEmail.status, 401);
+
   const registration = await fetch("/api/admin/devices", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-admin-key": adminKey },
+    headers: { "content-type": "application/json", "x-admin-email": adminEmail, "x-admin-password": adminPassword },
     body: JSON.stringify({
       displayName: "山田 花子",
       department: "開発部",
@@ -85,7 +92,7 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(unfinalized.status, 422);
 
   const summary = await fetch("/api/admin/summary", {
-    headers: { "x-admin-key": adminKey },
+    headers: { "x-admin-email": adminEmail, "x-admin-password": adminPassword },
   });
   assert.equal(summary.status, 200);
   const dashboard = await summary.json();
@@ -94,7 +101,7 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(dashboard.reports[0].display_name, "山田 花子");
 
   const content = await fetch(`/api/admin/reports/${report.report_id}/content`, {
-    headers: { "x-admin-key": adminKey },
+    headers: { "x-admin-email": adminEmail, "x-admin-password": adminPassword },
   });
   assert.equal(content.status, 200);
   const decrypted = await content.json();
