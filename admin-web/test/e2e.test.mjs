@@ -12,6 +12,7 @@ test("management report completes the admin API round trip", async (t) => {
   const mf = new Miniflare({
     compatibilityDate: "2026-07-20",
     modules: true,
+    modulesRules: [{ type: "ESModule", include: ["**/*.js"] }],
     scriptPath: "worker/index.js",
     d1Databases: { DB: "screen-capture-report-test" },
     bindings: {
