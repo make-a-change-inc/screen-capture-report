@@ -343,14 +343,19 @@ let adminEmail=sessionStorage.getItem('scr-admin-email')||'';let adminPassword=s
 export default {
   async fetch(request, env) {
     try {
-      await ensureSchema(env);
       const url = new URL(request.url);
-      if (url.pathname.startsWith("/api/admin/")) return adminApi(request, env, url.pathname);
+      if (url.pathname.startsWith("/api/admin/")) {
+        await ensureSchema(env);
+        return adminApi(request, env, url.pathname);
+      }
       if (
         request.method === "POST"
         && ["/api/device/reports", "/api/v1/device/reports/weekly-management"].includes(url.pathname)
-      ) return uploadReport(request, env);
-      if (url.pathname === "/api/health") return json({ ok: true, database: true });
+      ) {
+        await ensureSchema(env);
+        return uploadReport(request, env);
+      }
+      if (url.pathname === "/api/health") return json({ ok: true, database: Boolean(env.DB) });
       if (request.method !== "GET" || url.pathname !== "/") return json({ error: "not_found" }, 404);
       return new Response(page, {
         headers: {
