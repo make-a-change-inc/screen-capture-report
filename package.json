@@ -1,0 +1,10 @@
+{
+  "name": "work-visibility-ai-admin-mock",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node --check admin-web/worker/index.js && node --check admin-web/worker/dashboard-page.js",
+    "check": "npm run build"
+  }
+}
