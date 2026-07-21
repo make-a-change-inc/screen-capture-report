@@ -40,6 +40,16 @@ class FailingWeeklyGateway:
         raise TimeoutError("synthetic Gemini outage")
 
 
+class UnknownEvidenceGateway(FakeWeeklyGateway):
+    def weekly_insights(self, *, aggregates, evidence_log_ids):
+        response = super().weekly_insights(
+            aggregates=aggregates,
+            evidence_log_ids=evidence_log_ids,
+        )
+        response.improvement_methods[0]["evidence_log_ids"] = ["unknown-log-id"]
+        return response
+
+
 class InitiallyFailingNotifier(FakeNotifier):
     def __init__(self):
         super().__init__()
@@ -131,6 +141,16 @@ def test_failed_weekly_model_attempt_is_unmeasured_cost(database, files, setting
     assert summary["events"] == 1
     assert summary["unmeasured_events"] == 1
     assert not summary["passed"]
+
+
+def test_weekly_report_rejects_model_evidence_outside_local_allow_list(
+    database, files, settings
+) -> None:
+    add_log(database)
+    service, _ = build_service(database, files, settings, UnknownEvidenceGateway())
+
+    with pytest.raises(ValueError, match="weekly_report_unknown_evidence"):
+        service.generate_weekly(date(2026, 7, 13), send=False)
 
 
 def test_empty_week_generates_honest_no_data_report(database, files, settings) -> None:

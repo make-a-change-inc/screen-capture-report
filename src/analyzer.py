@@ -179,6 +179,22 @@ class GeminiGateway:
         aggregates: list[dict[str, Any]],
         evidence_log_ids: list[str],
     ) -> WeeklyResponse:
+        evidence_aliases = {
+            evidence_id: f"E{index:04d}"
+            for index, evidence_id in enumerate(evidence_log_ids, start=1)
+        }
+        evidence_ids_by_alias = {alias: value for value, alias in evidence_aliases.items()}
+        model_aggregates = [
+            {
+                **aggregate,
+                "evidence_log_ids": [
+                    evidence_aliases[evidence_id]
+                    for evidence_id in aggregate.get("evidence_log_ids", [])
+                    if evidence_id in evidence_aliases
+                ],
+            }
+            for aggregate in aggregates
+        ]
         suggestion = {
             "type": "object",
             "properties": {
@@ -189,7 +205,13 @@ class GeminiGateway:
                 "assumptions": {"type": "array", "items": {"type": "string"}},
                 "evidence_log_ids": {
                     "type": "array",
-                    "items": {"type": "string", "enum": evidence_log_ids},
+                    # Do not enumerate every evidence ID in the response schema.
+                    # A completed week can contain hundreds of IDs, and repeating
+                    # that enum across the three suggestion collections exceeds
+                    # Gemini's structured-output state limit. ReportService still
+                    # validates every returned ID against the local allow-list
+                    # before a management report can be persisted or uploaded.
+                    "items": {"type": "string"},
                 },
             },
             "required": [
@@ -218,7 +240,8 @@ class GeminiGateway:
             "以下の週次業務集計から、経営層が採否判断できる業務改善案を作成してください。"
             "従業員の順位付け、査定、懲戒、個人比較は行わないでください。"
             "各提案に種類、期待効果、前提、根拠ログIDを含め、根拠のない数値は断定しないでください。"
-            f"集計: {json.dumps(aggregates, ensure_ascii=False)}"
+            "根拠ログIDには集計に記載されたE0001形式のIDだけをそのまま使用してください。"
+            f"集計: {json.dumps(model_aggregates, ensure_ascii=False)}"
         )
         response = self.client.models.generate_content(
             model=self.report_model,
@@ -231,10 +254,25 @@ class GeminiGateway:
         usage = self._usage(response)
         try:
             payload = json.loads(response.text or "")
+
+            def restore_evidence_ids(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                restored = []
+                for item in items:
+                    restored.append(
+                        {
+                            **item,
+                            "evidence_log_ids": [
+                                evidence_ids_by_alias.get(str(value), str(value))
+                                for value in item["evidence_log_ids"]
+                            ],
+                        }
+                    )
+                return restored
+
             return WeeklyResponse(
-                improvement_methods=payload["improvement_methods"],
-                ai_candidates=payload["ai_candidates"],
-                productivity_impacts=payload["productivity_impacts"],
+                improvement_methods=restore_evidence_ids(payload["improvement_methods"]),
+                ai_candidates=restore_evidence_ids(payload["ai_candidates"]),
+                productivity_impacts=restore_evidence_ids(payload["productivity_impacts"]),
                 usage=usage,
             )
         except Exception as exc:
