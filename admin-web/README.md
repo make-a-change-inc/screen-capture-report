@@ -2,6 +2,23 @@
 
 Sites Worker + D1で動作する管理者ダッシュボードです。
 
+## Production
+
+- URL: <https://screen-capture-report-admin.m-okamura-8e7.workers.dev>
+- Worker: `screen-capture-report-admin`
+- D1: `screen-capture-report-admin-db`（APAC）
+
+管理APIキーとレポート暗号鍵の復旧コピーは、現在のWindowsユーザーだけが
+復号できる`admin-web/.production-credentials.dpapi`に保存されています。
+管理APIキーを確認するには次を実行します。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\show-production-admin-key.ps1
+```
+
+このファイルと表示されたキーはGit、メール、チャットへ添付しないでください。
+
 ## Runtime secrets
 
 - `BOOTSTRAP_ADMIN_HASH`: 管理画面APIキーのSHA-256 hex

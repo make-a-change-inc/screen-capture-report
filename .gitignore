@@ -39,3 +39,4 @@ node_modules/
 .wrangler/
 .test-deps/
 .test-tmp/
+admin-web/.production-credentials.dpapi
