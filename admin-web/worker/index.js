@@ -294,6 +294,77 @@ async function listSummary(env) {
   });
 }
 
+const decodeHtmlText = (value) => String(value || "")
+  .replace(/<[^>]*>/g, " ")
+  .replaceAll("&amp;", "&")
+  .replaceAll("&lt;", "<")
+  .replaceAll("&gt;", ">")
+  .replaceAll("&quot;", '"')
+  .replaceAll("&#39;", "'")
+  .replace(/\s+/g, " ")
+  .trim();
+
+function categoriesFromReportHtml(html) {
+  const categories = [];
+  const pattern = /<tr[^>]*>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<\/tr>/gi;
+  for (const match of String(html || "").matchAll(pattern)) {
+    const category = decodeHtmlText(match[1]);
+    const minutes = Number.parseFloat(decodeHtmlText(match[2]).replaceAll(",", ""));
+    if (category && Number.isFinite(minutes) && minutes >= 0) categories.push({ category, minutes });
+  }
+  return categories;
+}
+
+function normalizeCategories(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const category = String(item?.category || item?.name || item?.id || "").trim();
+    const minutes = Number(item?.minutes ?? item?.activeMinutes ?? item?.value);
+    return category && Number.isFinite(minutes) && minutes >= 0 ? [{ category, minutes }] : [];
+  });
+}
+
+async function dashboardSummary(env) {
+  const [employees, devices, reports] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) AS count FROM employees WHERE status='active'").first(),
+    env.DB.prepare("SELECT COUNT(*) AS count, MAX(last_seen_at) AS last_seen_at FROM devices WHERE status='active'").first(),
+    env.DB.prepare(
+      `SELECT r.id, r.period_start, r.period_end, r.received_at, e.department,
+       r.content_cipher, r.content_nonce, m.categories_json
+       FROM reports r JOIN employees e ON e.id=r.employee_id
+       LEFT JOIN report_metrics m ON m.report_id=r.id
+       WHERE e.status='active' ORDER BY r.period_start DESC LIMIT 200`,
+    ).all(),
+  ]);
+  const rows = [];
+  let fallbackCount = 0;
+  let reportsWithRows = 0;
+  for (const report of reports.results) {
+    let categories = normalizeCategories(JSON.parse(report.categories_json || "[]"));
+    if (!categories.length) {
+      const html = await decryptReport(env, report.content_cipher, report.content_nonce);
+      categories = categoriesFromReportHtml(html);
+      fallbackCount += Number(categories.length > 0);
+    }
+    reportsWithRows += Number(categories.length > 0);
+    for (const item of categories) {
+      rows.push({ periodStart: report.period_start, periodEnd: report.period_end,
+        department: report.department, category: item.category, minutes: item.minutes });
+    }
+  }
+  return json({
+    source: "Cloudflare D1 / finalized weekly management reports",
+    refreshedAt: new Date().toISOString(),
+    latestReceivedAt: reports.results[0]?.received_at || null,
+    employeeCount: Number(employees?.count || 0), deviceCount: Number(devices?.count || 0),
+    reportCount: reports.results.length, latestDeviceSyncAt: devices?.last_seen_at || null,
+    rows,
+    quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
+      reportsParsedFromEncryptedContent: fallbackCount,
+      reportsWithoutCategoryData: reports.results.length - reportsWithRows },
+  });
+}
+
 async function reportContent(env, reportId) {
   const report = await env.DB.prepare(
     "SELECT content_cipher, content_nonce, content_sha256 FROM reports WHERE id=?",
@@ -356,6 +427,10 @@ export default {
         return uploadReport(request, env);
       }
       if (url.pathname === "/api/health") return json({ ok: true, database: Boolean(env.DB) });
+      if (request.method === "GET" && url.pathname === "/api/dashboard/summary") {
+        await ensureSchema(env);
+        return dashboardSummary(env);
+      }
       if (request.method !== "GET" || url.pathname !== "/") return json({ error: "not_found" }, 404);
       return new Response(page, {
         headers: {

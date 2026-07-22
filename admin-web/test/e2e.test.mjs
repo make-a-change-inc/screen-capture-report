@@ -57,7 +57,13 @@ test("management report completes the admin API round trip", async (t) => {
     finalized: true,
     generated_at: "2026-07-20T00:00:00.000Z",
     report_html: "<h1>週次管理レポート</h1><p>テスト本文</p>",
-    metrics: { activeMinutes: 1200, idleMinutes: 60, captureCount: 40 },
+    metrics: {
+      activeMinutes: 1200,
+      idleMinutes: 60,
+      captureCount: 40,
+      workLogCount: 12,
+      categories: [{ category: "development", minutes: 720 }, { category: "research", minutes: 480 }],
+    },
   };
   const uploadInit = {
     method: "POST",
@@ -100,6 +106,13 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(dashboard.employees.length, 1);
   assert.equal(dashboard.reports.length, 1);
   assert.equal(dashboard.reports[0].display_name, "山田 花子");
+
+  const live = await fetch("/api/dashboard/summary");
+  assert.equal(live.status, 200);
+  const liveDashboard = await live.json();
+  assert.equal(liveDashboard.employeeCount, 1);
+  assert.equal(liveDashboard.reportCount, 1);
+  assert.deepEqual(liveDashboard.rows.map((item) => item.minutes), [720, 480]);
 
   const content = await fetch(`/api/admin/reports/${report.report_id}/content`, {
     headers: { "x-admin-email": adminEmail, "x-admin-password": adminPassword },

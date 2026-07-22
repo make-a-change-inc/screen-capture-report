@@ -106,6 +106,21 @@ class ManagementReportSync:
             report = reports.get(report_id)
             if report is None:
                 continue
+            zone = datetime.now().astimezone().tzinfo
+            period_start = datetime.fromisoformat(report["period_start"]).replace(tzinfo=zone)
+            period_end = datetime.fromisoformat(report["period_end"]).replace(tzinfo=zone) + timedelta(days=1)
+            logs = self.database.list_work_logs(period_start, period_end)
+            category_minutes: dict[str, float] = {}
+            for item in logs:
+                category = str(item["category"])
+                category_minutes[category] = category_minutes.get(category, 0.0) + float(
+                    item["estimated_minutes"]
+                )
+            categories = [
+                {"category": category, "minutes": round(minutes, 2)}
+                for category, minutes in sorted(category_minutes.items())
+            ]
+            capture = self.database.capture_metrics(period_start, period_end)
             result = self.client.upload(
                 settings.admin_api_url,
                 token,
@@ -120,6 +135,12 @@ class ManagementReportSync:
                     "period_start": report["period_start"],
                     "period_end": report["period_end"],
                     "report_html": report["payload"] or "",
+                    "metrics": {
+                        "activeMinutes": round(sum(category_minutes.values())),
+                        "categories": categories,
+                        "captureCount": capture["successful"],
+                        "workLogCount": len(logs),
+                    },
                 },
                 sites_bypass_token=self.secrets.get("admin_sites_bypass_token") or "",
             )
