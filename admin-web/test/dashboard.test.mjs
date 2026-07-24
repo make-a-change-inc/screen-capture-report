@@ -22,6 +22,12 @@ test("dashboard proposes the top three opportunities by estimated time savings",
   assert.match(dashboardPage, /個人単位の情報は表示していません/);
 });
 
+test("dashboard counts employees within the selected week and department", () => {
+  assert.match(dashboardPage, /scopedEmployeeIds/);
+  assert.match(dashboardPage, /q\('#employeeCount'\)\.textContent=scopedEmployeeIds\.size/);
+  assert.doesNotMatch(dashboardPage, /q\('#employeeCount'\)\.textContent=source\.employeeCount/);
+});
+
 test("weekly report UI remains off", () => {
   assert.doesNotMatch(dashboardPage, /data-report=/);
   assert.doesNotMatch(dashboardPage, /reportModal/);
