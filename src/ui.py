@@ -86,7 +86,8 @@ class WindowsTrayUI:
         root = tk.Tk()
         root.title("Screen Capture Report - 初期設定")
         root.geometry("680x760")
-        root.resizable(False, False)
+        root.minsize(560, 480)
+        root.resizable(True, True)
 
         tk.Label(root, text="Screen Capture Report", font=("Segoe UI", 20, "bold")).pack(
             pady=(20, 8)
@@ -98,14 +99,37 @@ class WindowsTrayUI:
             font=("Segoe UI", 10),
         ).pack(pady=8)
 
-        form = tk.Frame(root)
-        form.pack(fill="x", padx=36, pady=12)
+        body = tk.Frame(root)
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        canvas = tk.Canvas(body, highlightthickness=0)
+        scrollbar = tk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        scrollable = tk.Frame(canvas)
+        scrollable_window = canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def update_scroll_region(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def resize_scrollable(event) -> None:
+            canvas.itemconfigure(scrollable_window, width=event.width)
+
+        scrollable.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", resize_scrollable)
+        canvas.bind_all(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"),
+        )
+
+        form = tk.Frame(scrollable)
+        form.pack(fill="x", padx=28, pady=12)
         values: dict[str, tk.StringVar] = {}
 
         def add_row(label: str, key: str, value: str = "", secret: bool = False) -> None:
             row = tk.Frame(form)
             row.pack(fill="x", pady=5)
-            tk.Label(row, text=label, width=24, anchor="w").pack(side="left")
+            tk.Label(row, text=label, width=32, anchor="w").pack(side="left")
             variable = tk.StringVar(value=value)
             values[key] = variable
             tk.Entry(row, textvariable=variable, show="*" if secret else "").pack(
@@ -146,7 +170,7 @@ class WindowsTrayUI:
 
         consent = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            root,
+            scrollable,
             variable=consent,
             text="目的・取得内容・保持期間を理解し、業務時間中の取得に同意します",
             wraplength=540,
@@ -204,7 +228,7 @@ class WindowsTrayUI:
             accepted["value"] = True
             root.destroy()
 
-        buttons = tk.Frame(root)
+        buttons = tk.Frame(scrollable)
         buttons.pack(pady=8)
         tk.Button(buttons, text="同意して開始", width=18, command=save).pack(side="left", padx=8)
         tk.Button(buttons, text="終了", width=12, command=root.destroy).pack(side="left", padx=8)
