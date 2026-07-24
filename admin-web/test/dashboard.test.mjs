@@ -5,16 +5,20 @@ import { dashboardPage } from "../worker/dashboard-page.js";
 
 test("dashboard loads live D1 data instead of embedded mock totals", () => {
   assert.match(dashboardPage, /fetch\('\/api\/dashboard\/summary'/);
-  assert.match(dashboardPage, /Cloudflare D1 実データ/);
-  assert.match(dashboardPage, /実測業務データ/);
+  assert.doesNotMatch(dashboardPage, /Cloudflare D1/);
+  assert.match(dashboardPage, /実測データから、/);
   assert.doesNotMatch(dashboardPage, /134\.3/);
   assert.doesNotMatch(dashboardPage, /169\.3/);
   assert.doesNotMatch(dashboardPage, /data-scenario=/);
 });
 
-test("dashboard separates measured time from estimated savings", () => {
-  assert.match(dashboardPage, /「実測時間」は端末で分類された業務ログの合計/);
-  assert.match(dashboardPage, /「削減予想」はカテゴリ別の適用率を使った試算/);
+test("dashboard proposes the top three opportunities by estimated time savings", () => {
+  assert.match(dashboardPage, /AI化候補 TOP 3/);
+  assert.match(dashboardPage, /／週・人/);
+  assert.match(dashboardPage, /employeeIds/);
+  assert.match(dashboardPage, /sort\(\(a,b\)=>b\.saving-a\.saving\)\.slice\(0,3\)/);
+  assert.match(dashboardPage, /削減見込み時間は、端末で分類された実測業務時間にカテゴリ別の暫定試算係数を掛けた目安/);
+  assert.match(dashboardPage, /週次レポートを集計中/);
   assert.match(dashboardPage, /個人単位の情報は表示していません/);
 });
 
