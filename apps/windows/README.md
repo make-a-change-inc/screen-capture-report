@@ -78,6 +78,7 @@ APIキーとSMTPパスワードは`config.json`やSQLiteには保存されませ
 ## 開発環境
 
 推奨はWindows上のPython 3.12です。
+以下のコマンドはリポジトリの`apps/windows`ディレクトリで実行します。
 
 ```powershell
 py -3.12 -m venv .venv
@@ -97,7 +98,7 @@ macOS/Linuxでは、Windows APIをフェイク化した単体・統合・契約�
 
 このスクリプトは品質ゲートを再実行してからPyInstaller onedirを作成し、`iscc.exe`があればInno Setupインストーラも生成します。Inno Setupがなければzipを作成します。PyInstallerはクロスコンパイル非対応なので、macOSで生成したspecだけをWindows完成証拠にはできません。
 
-`.github/workflows/windows-ci.yml`は、許可後に`blushup-windows`をpushした場合、GitHubのWindows 2022ランナーで品質ゲート、PyInstallerビルド、起動前同意のfail-closed、二重起動防止を確認し、ハッシュ付き成果物を保存します。このCIはWindows Server上の非対話スモークであり、Windows 10/11のトレイ操作、Win+L、複数モニター、DPAPI、実APIを含む対話E2Eの代替にはなりません。
+リポジトリルートの`.github/workflows/windows-ci.yml`は、Pull Requestまたは`main`の`apps/windows/**`が変更された場合、GitHubのWindows 2022ランナーで品質ゲート、PyInstallerビルド、起動前同意のfail-closed、二重起動防止を確認し、ハッシュ付き成果物を保存します。このCIはWindows Server上の非対話スモークであり、Windows 10/11のトレイ操作、Win+L、複数モニター、DPAPI、実APIを含む対話E2Eの代替にはなりません。
 
 ## 精度・成功率・原価の測定
 
@@ -125,10 +126,10 @@ macOS/Linuxでは、Windows APIをフェイク化した単体・統合・契約�
 
 設定画面で管理API URL、端末アップロードトークンを入力し、`server-sync-v1`へ別途同意した場合だけ、確定済みの管理者向け週次レポートを送信します。本人日報、キャプチャ画像、ウィンドウタイトルは送信しません。
 
-管理Webのソースは`admin-web/`にあります。Cloudflare Workerが管理UIと端末APIを提供し、D1へAES-256-GCMで暗号化した週次本文を保存します。ローカル検証は以下です。
+管理Webのソースはリポジトリルートの`admin-web/`にあります。Cloudflare Workerが管理UIと端末APIを提供し、D1へAES-256-GCMで暗号化した週次本文を保存します。`apps/windows`からローカル検証する場合は以下です。
 
 ```powershell
-cd admin-web
+cd ..\..\admin-web
 npm install
 npm test
 npx wrangler deploy --dry-run
@@ -157,4 +158,4 @@ npx wrangler deploy --dry-run
 - 3キャラクター/複数人格分析
 - 自動アップデート
 - コード署名、本番配布、新規有料契約
-- macOS版の維持
+- Windows版からのmacOS機能提供（macOS版は`apps/macos`で別管理）
