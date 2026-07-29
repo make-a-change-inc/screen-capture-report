@@ -108,7 +108,9 @@ class ManagementReportSync:
                 continue
             zone = datetime.now().astimezone().tzinfo
             period_start = datetime.fromisoformat(report["period_start"]).replace(tzinfo=zone)
-            period_end = datetime.fromisoformat(report["period_end"]).replace(tzinfo=zone) + timedelta(days=1)
+            period_end = datetime.fromisoformat(report["period_end"]).replace(
+                tzinfo=zone
+            ) + timedelta(days=1)
             logs = self.database.list_work_logs(period_start, period_end)
             category_minutes: dict[str, float] = {}
             for item in logs:
