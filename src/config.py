@@ -19,7 +19,7 @@ from src.constants import (
     SERVER_SYNC_CONSENT_VERSION,
 )
 
-REQUIRED_ONBOARDING_SECRETS = ("gemini_api_key", "employee_id", "department", "privacy_contact")
+REQUIRED_ONBOARDING_SECRETS = ("gemini_api_key", "employee_id", "department")
 STORED_SECRET_KEYS = (
     "gemini_api_key",
     "smtp_password",

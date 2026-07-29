@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from io import BytesIO
@@ -22,6 +22,12 @@ from src.utils import get_resource_path
 from src.viewer import EmployeeArchive, EmployeeArchiveDay
 
 logger = logging.getLogger(__name__)
+
+WEEKDAY_LABELS = ("月", "火", "水", "木", "金", "土", "日")
+
+
+def selected_weekdays(selected: Sequence[bool]) -> list[int]:
+    return [day for day, is_selected in enumerate(selected) if is_selected]
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -50,8 +56,8 @@ def onboarding_notice(settings: Settings) -> str:
         "画像は分類のためGoogle Gemini APIへ送信されます。"
         "画像は解析成功直後に削除し、障害時も最大24時間、業務ログは"
         f"{settings.log_retention_days}日、レポートは{settings.report_retention_days}日保持します。"
-        "本人日報は本人メール、週次集計は経営レポートメールへ送ります。"
-        "訂正・削除・事故連絡は下記のプライバシー窓口へ行えます。"
+        "本人日報はアプリ内で確認できます。週次集計は、管理レポートの送信設定を"
+        "有効にした場合のみ管理Webへ送信されます。"
         "取得中はトレイで確認でき、停止状態は再起動後も維持されます。"
     )
 
@@ -89,18 +95,8 @@ class WindowsTrayUI:
         root.minsize(560, 480)
         root.resizable(True, True)
 
-        tk.Label(root, text="Screen Capture Report", font=("Segoe UI", 20, "bold")).pack(
-            pady=(20, 8)
-        )
-        tk.Message(
-            root,
-            text=onboarding_notice(settings),
-            width=620,
-            font=("Segoe UI", 10),
-        ).pack(pady=8)
-
         body = tk.Frame(root)
-        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        body.pack(fill="both", expand=True, padx=8, pady=8)
         canvas = tk.Canvas(body, highlightthickness=0)
         scrollbar = tk.Scrollbar(body, orient="vertical", command=canvas.yview)
         scrollable = tk.Frame(canvas)
@@ -122,6 +118,16 @@ class WindowsTrayUI:
             lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"),
         )
 
+        tk.Label(scrollable, text="Screen Capture Report", font=("Segoe UI", 20, "bold")).pack(
+            pady=(20, 8)
+        )
+        tk.Message(
+            scrollable,
+            text=onboarding_notice(settings),
+            width=620,
+            font=("Segoe UI", 10),
+        ).pack(padx=28, pady=8)
+
         form = tk.Frame(scrollable)
         form.pack(fill="x", padx=28, pady=12)
         values: dict[str, tk.StringVar] = {}
@@ -137,36 +143,8 @@ class WindowsTrayUI:
             )
 
         add_row("Gemini APIキー（必須）", "gemini_api_key", "", True)
-        add_row("従業員識別子（必須）", "employee_id", self.secrets.get("employee_id") or "")
-        add_row("部署（必須）", "department", self.secrets.get("department") or "")
-        add_row(
-            "訂正・削除・事故連絡先（必須）",
-            "privacy_contact",
-            self.secrets.get("privacy_contact") or "",
-        )
-        add_row(
-            "本人メール（任意）",
-            "employee_email",
-            self.secrets.get("employee_email") or "",
-        )
-        add_row(
-            "経営レポートメール（任意）",
-            "management_email",
-            self.secrets.get("management_email") or "",
-        )
-        add_row(
-            "SMTPユーザー（任意）",
-            "smtp_user",
-            self.secrets.get("smtp_user") or "",
-        )
-        add_row("SMTPアプリパスワード", "smtp_password", "", True)
-        add_row("勤務開始 HH:MM", "work_start", settings.work_start)
-        add_row("勤務終了 HH:MM", "work_end", settings.work_end)
-        add_row(
-            "稼働曜日 0=月〜6=日",
-            "work_weekdays",
-            ",".join(map(str, settings.work_weekdays)),
-        )
+        add_row("社員ID（必須）", "employee_id", self.secrets.get("employee_id") or "")
+        add_row("所属部署（必須）", "department", self.secrets.get("department") or "")
 
         consent = tk.BooleanVar(value=False)
         tk.Checkbutton(
@@ -185,40 +163,19 @@ class WindowsTrayUI:
                 return
             required_identity = {
                 key: values[key].get().strip()
-                for key in ("employee_id", "department", "privacy_contact")
+                for key in ("employee_id", "department")
             }
             if not all(required_identity.values()):
-                messagebox.showerror("入力エラー", "対象者、部署、連絡先はすべて必須です。")
+                messagebox.showerror("入力エラー", "社員IDと所属部署は必須です。")
                 return
             if not consent.get():
                 messagebox.showerror("同意が必要です", "同意前に画面取得は開始できません。")
                 return
-            settings.work_start = values["work_start"].get().strip()
-            settings.work_end = values["work_end"].get().strip()
-            settings.work_weekdays = [
-                int(value.strip())
-                for value in values["work_weekdays"].get().split(",")
-                if value.strip()
-            ]
             settings.grant_consent()
             try:
                 self.secrets.set("gemini_api_key", api_key)
                 for key, value in required_identity.items():
                     self.secrets.set(key, value)
-                for key in ("employee_email", "management_email", "smtp_user"):
-                    value = values[key].get().strip()
-                    if value:
-                        self.secrets.set(key, value)
-                    else:
-                        self.secrets.delete(key)
-                smtp_user = values["smtp_user"].get().strip()
-                if smtp_user:
-                    self.secrets.set("email_from", smtp_user)
-                else:
-                    self.secrets.delete("email_from")
-                smtp_password = values["smtp_password"].get().strip()
-                if smtp_password:
-                    self.secrets.set("smtp_password", smtp_password)
                 # Consent is the commit marker and is persisted only after all
                 # required Credential Manager/DPAPI writes succeed.
                 self.settings_store.save(settings)
@@ -604,31 +561,10 @@ class WindowsTrayUI:
         values: dict[str, tk.StringVar] = {}
 
         fields = [
-            ("従業員識別子", "employee_id", self.secrets.get("employee_id") or ""),
-            ("部署", "department", self.secrets.get("department") or ""),
-            (
-                "訂正・削除・事故連絡先",
-                "privacy_contact",
-                self.secrets.get("privacy_contact") or "",
-            ),
-            ("本人メール", "employee_email", self.secrets.get("employee_email") or ""),
-            (
-                "経営レポートメール",
-                "management_email",
-                self.secrets.get("management_email") or "",
-            ),
-            ("SMTPユーザー", "smtp_user", self.secrets.get("smtp_user") or ""),
+            ("社員ID", "employee_id", self.secrets.get("employee_id") or ""),
+            ("所属部署", "department", self.secrets.get("department") or ""),
             ("勤務開始 HH:MM", "work_start", settings.work_start),
             ("勤務終了 HH:MM", "work_end", settings.work_end),
-            (
-                "稼働曜日 0=月〜6=日",
-                "work_weekdays",
-                ",".join(map(str, settings.work_weekdays)),
-            ),
-            ("離席判定（秒）", "idle", str(settings.idle_threshold_seconds)),
-            ("ログ保持（日）", "log_days", str(settings.log_retention_days)),
-            ("レポート保持（日）", "report_days", str(settings.report_retention_days)),
-            ("管理API URL", "admin_api_url", settings.admin_api_url),
         ]
         for label, key, current in fields:
             row = tk.Frame(form)
@@ -638,119 +574,57 @@ class WindowsTrayUI:
             values[key] = variable
             tk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
 
-        api_key = tk.StringVar()
-        smtp_password = tk.StringVar()
-        admin_upload_token = tk.StringVar()
-        admin_sites_bypass_token = tk.StringVar()
-        for label, variable in (
-            ("新しいGemini APIキー", api_key),
-            ("新しいSMTPパスワード", smtp_password),
-            ("管理APIアップロードトークン", admin_upload_token),
-            ("Sites接続トークン", admin_sites_bypass_token),
-        ):
-            row = tk.Frame(form)
-            row.pack(fill="x", pady=5)
-            tk.Label(row, text=label, width=22, anchor="w").pack(side="left")
-            tk.Entry(row, textvariable=variable, show="*").pack(side="left", fill="x", expand=True)
+        weekday_row = tk.Frame(form)
+        weekday_row.pack(fill="x", pady=5)
+        tk.Label(weekday_row, text="勤務曜日", width=22, anchor="w").pack(side="left")
+        weekday_values = [
+            tk.BooleanVar(value=day in settings.work_weekdays) for day in range(len(WEEKDAY_LABELS))
+        ]
+        for day, label in enumerate(WEEKDAY_LABELS):
+            tk.Checkbutton(weekday_row, text=label, variable=weekday_values[day]).pack(side="left")
+        tk.Label(
+            form,
+            text="選択した曜日・時間帯に自動で画面を取得します。",
+            anchor="w",
+            foreground="#555555",
+        ).pack(fill="x", pady=(0, 8))
 
-        mode = tk.StringVar(value=settings.capture_mode)
+        api_key = tk.StringVar()
         row = tk.Frame(form)
         row.pack(fill="x", pady=5)
-        tk.Label(row, text="取得モード", width=22, anchor="w").pack(side="left")
-        tk.OptionMenu(row, mode, "active_window", "all_screens").pack(side="left")
+        tk.Label(row, text="Gemini APIキーを変更", width=22, anchor="w").pack(side="left")
+        tk.Entry(row, textvariable=api_key, show="*").pack(side="left", fill="x", expand=True)
 
         autostart = tk.BooleanVar(value=self.autostart.is_enabled())
         tk.Checkbutton(form, text="Windowsログイン時に起動", variable=autostart).pack(
             anchor="w", pady=8
         )
-        server_sync = tk.BooleanVar(value=settings.server_sync_enabled)
-        tk.Checkbutton(
-            form,
-            text="確定済み週次管理レポートを管理Webへ送信する",
-            variable=server_sync,
-        ).pack(anchor="w", pady=4)
-
-        process_text = tk.Text(form, height=4)
-        process_text.insert("1.0", "\n".join(settings.excluded_processes))
-        tk.Label(form, text="除外プロセス（1行1件）", anchor="w").pack(fill="x")
-        process_text.pack(fill="x")
-        title_text = tk.Text(form, height=4)
-        title_text.insert("1.0", "\n".join(settings.excluded_title_keywords))
-        tk.Label(form, text="除外タイトル語（1行1件）", anchor="w").pack(fill="x")
-        title_text.pack(fill="x")
 
         def save() -> None:
             try:
                 if not all(
                     values[key].get().strip()
-                    for key in ("employee_id", "department", "privacy_contact")
+                    for key in ("employee_id", "department")
                 ):
-                    raise ValueError("対象者、部署、連絡先は必須です")
+                    raise ValueError("社員IDと所属部署は必須です")
                 settings.work_start = values["work_start"].get().strip()
                 settings.work_end = values["work_end"].get().strip()
-                settings.work_weekdays = [
-                    int(value.strip())
-                    for value in values["work_weekdays"].get().split(",")
-                    if value.strip()
-                ]
-                settings.idle_threshold_seconds = int(values["idle"].get())
-                settings.log_retention_days = int(values["log_days"].get())
-                settings.report_retention_days = int(values["report_days"].get())
-                settings.admin_api_url = values["admin_api_url"].get().strip()
-                if server_sync.get() and not settings.has_server_sync_consent:
-                    approved = messagebox.askyesno(
-                        "管理Webへの送信同意",
-                        "管理者向け週次レポート（従業員識別子、部署、期間、業務集計、"
-                        "改善提案）を管理Webへ送信します。本人日報、画面画像、"
-                        "ウィンドウタイトルは送信しません。同意しますか？",
-                    )
-                    if not approved:
-                        raise ValueError("管理Webへの送信には明示同意が必要です")
-                    settings.grant_server_sync_consent()
-                if not server_sync.get():
-                    settings.revoke_server_sync_consent()
-                settings.server_sync_enabled = server_sync.get()
-                settings.capture_mode = mode.get()
-                settings.excluded_processes = [
-                    item.strip()
-                    for item in process_text.get("1.0", "end").splitlines()
-                    if item.strip()
-                ]
-                settings.excluded_title_keywords = [
-                    item.strip()
-                    for item in title_text.get("1.0", "end").splitlines()
-                    if item.strip()
-                ]
+                settings.work_weekdays = selected_weekdays(
+                    [value.get() for value in weekday_values]
+                )
                 self.settings_store.save(settings)
                 self.autostart.set_enabled(autostart.get())
                 for key in (
                     "employee_id",
                     "department",
-                    "privacy_contact",
-                    "employee_email",
-                    "management_email",
-                    "smtp_user",
                 ):
                     value = values[key].get().strip()
                     if value:
                         self.secrets.set(key, value)
                     else:
                         self.secrets.delete(key)
-                smtp_user = values["smtp_user"].get().strip()
-                if smtp_user:
-                    self.secrets.set("email_from", smtp_user)
-                else:
-                    self.secrets.delete("email_from")
                 if api_key.get().strip():
                     self.secrets.set("gemini_api_key", api_key.get().strip())
-                if smtp_password.get().strip():
-                    self.secrets.set("smtp_password", smtp_password.get().strip())
-                if admin_upload_token.get().strip():
-                    self.secrets.set("admin_upload_token", admin_upload_token.get().strip())
-                if admin_sites_bypass_token.get().strip():
-                    self.secrets.set(
-                        "admin_sites_bypass_token", admin_sites_bypass_token.get().strip()
-                    )
             except Exception as exc:
                 messagebox.showerror("保存エラー", type(exc).__name__)
                 return
@@ -764,7 +638,7 @@ class WindowsTrayUI:
         def delete_credentials() -> None:
             if not messagebox.askyesno(
                 "資格情報の削除",
-                "API・メール・対象者・連絡先の情報をWindows資格情報から削除しますか？",
+                "APIキーと社員情報をWindows資格情報から削除しますか？",
             ):
                 return
             self.service.pause()

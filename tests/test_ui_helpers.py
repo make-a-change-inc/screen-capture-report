@@ -2,7 +2,13 @@ import json
 from pathlib import Path
 
 from src.config import MemorySecretStore, Settings, SettingsStore
-from src.ui import WindowsTrayUI, _HTMLTextExtractor, onboarding_notice
+from src.ui import (
+    WEEKDAY_LABELS,
+    WindowsTrayUI,
+    _HTMLTextExtractor,
+    onboarding_notice,
+    selected_weekdays,
+)
 
 
 class RecordingService:
@@ -79,12 +85,16 @@ def test_onboarding_notice_discloses_collection_and_rights() -> None:
         "最大24時間",
         "業務ログは30日",
         "レポートは90日",
-        "本人メール",
-        "経営レポートメール",
-        "訂正・削除・事故連絡",
+        "本人日報はアプリ内で確認",
+        "管理Webへ送信",
         "停止状態は再起動後も維持",
     ):
         assert required in notice
+
+
+def test_weekday_selection_uses_monday_to_sunday_order() -> None:
+    assert WEEKDAY_LABELS == ("月", "火", "水", "木", "金", "土", "日")
+    assert selected_weekdays([True, False, True, False, False, False, True]) == [0, 2, 6]
 
 
 def test_tray_becomes_visible_before_capture_service_starts(tmp_path: Path) -> None:

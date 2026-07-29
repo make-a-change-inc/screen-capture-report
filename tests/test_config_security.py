@@ -99,16 +99,10 @@ def test_server_sync_requires_separate_consent_and_https() -> None:
 
 
 def test_required_onboarding_secret_gate_fails_closed() -> None:
-    secrets = MemorySecretStore(
-        {
-            "gemini_api_key": "synthetic",
-            "employee_id": "employee-1",
-            "department": "QA",
-        }
-    )
+    secrets = MemorySecretStore({"gemini_api_key": "synthetic", "employee_id": "employee-1"})
     assert not has_required_onboarding_secrets(secrets)
 
-    secrets.set("privacy_contact", "privacy@example.test")
+    secrets.set("department", "QA")
     assert has_required_onboarding_secrets(secrets)
 
 
