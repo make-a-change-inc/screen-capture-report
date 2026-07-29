@@ -1,0 +1,26 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "screen-capture-report-admin",
+	"main": "worker/index.js",
+	"compatibility_date": "2026-07-20",
+	"workers_dev": true,
+	"preview_urls": false,
+	"vars": {
+		"ADMIN_EMAIL": "admin@screen-capture-report.local"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "screen-capture-report-admin-db",
+			"database_id": "5cc750e1-ea41-4555-913d-8fece1275289"
+		}
+	],
+	"triggers": {
+		"crons": [
+			"17 3 * * *"
+		]
+	},
+	"observability": {
+		"enabled": true
+	}
+}

@@ -1,0 +1,2 @@
+BOOTSTRAP_ADMIN_HASH=sha256-hex-of-admin-key
+REPORT_ENCRYPTION_KEY_V1=base64-encoded-32-byte-key

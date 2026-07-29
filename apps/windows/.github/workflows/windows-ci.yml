@@ -1,0 +1,114 @@
+name: Windows verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - blushup-windows
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build-smoke:
+    runs-on: windows-2022
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $parseFailures = @()
+          Get-ChildItem scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $parseFailures += $errors
+            }
+          }
+          if ($parseFailures.Count -gt 0) {
+            $parseFailures | Format-List | Out-String | Write-Error
+            throw "PowerShell parsing failed"
+          }
+
+      - name: Test and build Windows package
+        shell: powershell
+        run: .\scripts\build_windows.ps1 2>&1 | Tee-Object -FilePath build-windows.log
+
+      - name: Run packaged startup smoke
+        shell: powershell
+        run: .\scripts\smoke_windows.ps1 2>&1 | Tee-Object -FilePath smoke-windows.log
+
+      - name: Collect non-sensitive evidence
+        if: always()
+        shell: powershell
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "windows-evidence"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          @(
+            "commit=$(git rev-parse HEAD)"
+            "python=$(python --version 2>&1)"
+            "runner=$env:RUNNER_NAME"
+            "image=$env:ImageOS-$env:ImageVersion"
+          ) | Set-Content (Join-Path $evidence "environment.txt")
+          Copy-Item build-windows.log, smoke-windows.log $evidence -ErrorAction SilentlyContinue
+          if (Test-Path dist) {
+            Get-ChildItem dist -Recurse -File | ForEach-Object {
+              $hash = Get-FileHash $_.FullName -Algorithm SHA256
+              [PSCustomObject]@{
+                Path = $_.FullName.Substring((Resolve-Path .).Path.Length + 1)
+                Size = $_.Length
+                SHA256 = $hash.Hash
+              }
+            } | ConvertTo-Json | Set-Content (Join-Path $evidence "artifact-manifest.json")
+            $deliverables = @(
+              Get-Item "dist\ScreenCaptureReport\ScreenCaptureReport.exe" -ErrorAction SilentlyContinue
+              Get-ChildItem "dist\installer" -Filter *.exe -File -ErrorAction SilentlyContinue
+              Get-Item "dist\ScreenCaptureReport-windows-x64.zip" -ErrorAction SilentlyContinue
+            )
+            $deliverables | ForEach-Object {
+              $hash = Get-FileHash $_.FullName -Algorithm SHA256
+              [PSCustomObject]@{
+                Path = $_.FullName.Substring((Resolve-Path .).Path.Length + 1)
+                Size = $_.Length
+                SHA256 = $hash.Hash
+              }
+            } | ConvertTo-Json | Set-Content (Join-Path $evidence "deliverable-manifest.json")
+            Write-Host "Deliverable manifest:"
+            Get-Content (Join-Path $evidence "deliverable-manifest.json") | Write-Host
+          }
+          $smokeEvidence = "dist\smoke-evidence\startup-smoke.json"
+          if (Test-Path $smokeEvidence) {
+            Copy-Item $smokeEvidence $evidence
+            Write-Host "Startup smoke evidence:"
+            Get-Content $smokeEvidence | Write-Host
+          }
+
+      - name: Upload Windows package and evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-package-${{ github.sha }}
+          path: |
+            dist/
+            ${{ runner.temp }}/windows-evidence/
+          if-no-files-found: error
+          retention-days: 14
