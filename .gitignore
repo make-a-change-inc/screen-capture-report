@@ -8,6 +8,7 @@ env/
 
 # Environment variables
 .env
+admin-web/.dev.vars
 
 # Data and Logs
 data/

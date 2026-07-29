@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageTk
 from src.autostart import AutostartManager
 from src.config import SecretBackend, Settings, SettingsStore
 from src.constants import PURPOSE_LIMITATION
+from src.enrollment import EnrollmentClient
 from src.platform_win import WindowsPlatform
 from src.reporting import ReportService
 from src.service import RuntimeService
@@ -56,8 +57,8 @@ def onboarding_notice(settings: Settings) -> str:
         "画像は分類のためGoogle Gemini APIへ送信されます。"
         "画像は解析成功直後に削除し、障害時も最大24時間、業務ログは"
         f"{settings.log_retention_days}日、レポートは{settings.report_retention_days}日保持します。"
-        "本人日報はアプリ内で確認できます。週次集計は、管理レポートの送信設定を"
-        "有効にした場合のみ管理Webへ送信されます。"
+        "本人日報はアプリ内で確認できます。確定済みの週次集計のみ管理Webへ送信され、"
+        "画面画像・本人日報・ウィンドウタイトルは送信されません。"
         "取得中はトレイで確認でき、停止状態は再起動後も維持されます。"
     )
 
@@ -143,8 +144,10 @@ class WindowsTrayUI:
             )
 
         add_row("Gemini APIキー（必須）", "gemini_api_key", "", True)
+        add_row("氏名（必須）", "display_name", self.secrets.get("display_name") or "")
         add_row("社員ID（必須）", "employee_id", self.secrets.get("employee_id") or "")
         add_row("所属部署（必須）", "department", self.secrets.get("department") or "")
+        add_row("招待コード（必須）", "invite_code", "", True)
 
         consent = tk.BooleanVar(value=False)
         tk.Checkbutton(
@@ -163,19 +166,33 @@ class WindowsTrayUI:
                 return
             required_identity = {
                 key: values[key].get().strip()
-                for key in ("employee_id", "department")
+                for key in ("display_name", "employee_id", "department")
             }
             if not all(required_identity.values()):
-                messagebox.showerror("入力エラー", "社員IDと所属部署は必須です。")
+                messagebox.showerror("入力エラー", "氏名、社員ID、所属部署は必須です。")
+                return
+            invite_code = values["invite_code"].get().strip()
+            if not invite_code:
+                messagebox.showerror("入力エラー", "招待コードが必要です。")
                 return
             if not consent.get():
                 messagebox.showerror("同意が必要です", "同意前に画面取得は開始できません。")
                 return
             settings.grant_consent()
             try:
+                enrollment = EnrollmentClient().enroll(
+                    invite_code=invite_code,
+                    display_name=required_identity["display_name"],
+                    employee_id=required_identity["employee_id"],
+                    department=required_identity["department"],
+                )
+                settings.admin_api_url = enrollment.api_url
+                settings.grant_server_sync_consent()
+                settings.server_sync_enabled = True
                 self.secrets.set("gemini_api_key", api_key)
                 for key, value in required_identity.items():
                     self.secrets.set(key, value)
+                self.secrets.set("admin_upload_token", enrollment.device_token)
                 # Consent is the commit marker and is persisted only after all
                 # required Credential Manager/DPAPI writes succeed.
                 self.settings_store.save(settings)
@@ -561,6 +578,7 @@ class WindowsTrayUI:
         values: dict[str, tk.StringVar] = {}
 
         fields = [
+            ("氏名", "display_name", self.secrets.get("display_name") or ""),
             ("社員ID", "employee_id", self.secrets.get("employee_id") or ""),
             ("所属部署", "department", self.secrets.get("department") or ""),
             ("勤務開始 HH:MM", "work_start", settings.work_start),
@@ -604,9 +622,9 @@ class WindowsTrayUI:
             try:
                 if not all(
                     values[key].get().strip()
-                    for key in ("employee_id", "department")
+                    for key in ("display_name", "employee_id", "department")
                 ):
-                    raise ValueError("社員IDと所属部署は必須です")
+                    raise ValueError("氏名、社員ID、所属部署は必須です")
                 settings.work_start = values["work_start"].get().strip()
                 settings.work_end = values["work_end"].get().strip()
                 settings.work_weekdays = selected_weekdays(
@@ -615,6 +633,7 @@ class WindowsTrayUI:
                 self.settings_store.save(settings)
                 self.autostart.set_enabled(autostart.get())
                 for key in (
+                    "display_name",
                     "employee_id",
                     "department",
                 ):

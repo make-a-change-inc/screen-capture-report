@@ -90,6 +90,9 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, actor_type TEXT NOT NULL,
     actor_id TEXT, action TEXT NOT NULL, target_type TEXT, target_id TEXT,
     occurred_at TEXT NOT NULL, metadata_json TEXT)`,
+  `CREATE TABLE IF NOT EXISTS invitation_codes (id TEXT PRIMARY KEY, code_cipher BLOB NOT NULL,
+    code_nonce BLOB NOT NULL, code_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL)`,
 ];
 
 async function ensureSchema(env) {
@@ -151,6 +154,90 @@ async function createDevice(request, env) {
   ]);
   await audit(env, "admin", "owner", "device.created", "device", deviceId, { employeeId });
   return json({ employeeId, deviceId, deviceToken: token }, 201);
+}
+
+function makeInvitationCode() {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return `SCR-${hex(bytes.slice(0, 4)).toUpperCase()}-${hex(bytes.slice(4)).toUpperCase()}`;
+}
+
+async function activeInvitation(env) {
+  return env.DB.prepare(
+    "SELECT * FROM invitation_codes WHERE status='active' ORDER BY created_at DESC LIMIT 1",
+  ).first();
+}
+
+async function rotateInvitation(env) {
+  const code = makeInvitationCode();
+  const encrypted = await encryptReport(env, code);
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE invitation_codes SET status='inactive' WHERE status='active'"),
+    env.DB.prepare(
+      "INSERT INTO invitation_codes VALUES (?, ?, ?, ?, 'active', ?)",
+    ).bind(crypto.randomUUID(), encrypted.cipher, encrypted.nonce, await sha256(code), now),
+  ]);
+  await audit(env, "admin", "owner", "invitation.rotated", "invitation", "company-default");
+  return code;
+}
+
+async function invitationForAdmin(env) {
+  const invitation = await activeInvitation(env);
+  if (!invitation) return json({ invitationCode: null });
+  return json({ invitationCode: await decryptReport(env, invitation.code_cipher, invitation.code_nonce) });
+}
+
+async function enroll(request, env) {
+  const body = await request.json();
+  const inviteCode = String(body.inviteCode || "").trim();
+  const displayName = String(body.displayName || "").trim();
+  const employeeId = String(body.employeeId || "").trim();
+  const department = String(body.department || "").trim();
+  if (!inviteCode || !displayName || !employeeId || !department || employeeId.length > 128) {
+    return json({ error: "invalid_input" }, 400);
+  }
+  const invitation = await activeInvitation(env);
+  if (!invitation || !(await timingSafeMatch(inviteCode, invitation.code_hash))) {
+    return json({ error: "invalid_invitation_code" }, 401);
+  }
+  const token = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)))
+    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const deviceId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE devices SET status='inactive' WHERE employee_id=? AND status='active'")
+      .bind(employeeId),
+    env.DB.prepare(
+      `INSERT INTO employees (id, display_name, department, status, created_at)
+       VALUES (?, ?, ?, 'active', ?)
+       ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,
+       department=excluded.department, status='active'`,
+    ).bind(employeeId, displayName, department, now),
+    env.DB.prepare(
+      `INSERT INTO devices (id, employee_id, name, token_hash, status, created_at)
+       VALUES (?, ?, 'Windows app', ?, 'active', ?)`,
+    ).bind(deviceId, employeeId, await sha256(token), now),
+  ]);
+  await audit(env, "employee", employeeId, "enrollment.completed", "employee", employeeId);
+  return json({ deviceToken: token }, 201);
+}
+
+async function listUsers(env, department) {
+  const selectedDepartment = String(department || "").trim();
+  const filter = selectedDepartment
+    ? "WHERE department=? AND status='active'"
+    : "WHERE status='active'";
+  const bindings = selectedDepartment ? [selectedDepartment] : [];
+  const [users, departments] = await Promise.all([
+    env.DB.prepare(
+      `SELECT id AS employeeId, display_name AS displayName, department
+       FROM employees ${filter} ORDER BY department, display_name`,
+    ).bind(...bindings).all(),
+    env.DB.prepare(
+      "SELECT department, COUNT(*) AS count FROM employees WHERE status='active' GROUP BY department ORDER BY department",
+    ).all(),
+  ]);
+  return json({ users: users.results, departments: departments.results });
 }
 
 function normalizeReport(body) {
@@ -325,21 +412,27 @@ function normalizeCategories(value) {
 }
 
 async function dashboardSummary(env) {
-  const [employees, devices, reports] = await Promise.all([
-    env.DB.prepare("SELECT COUNT(*) AS count FROM employees WHERE status='active'").first(),
-    env.DB.prepare("SELECT COUNT(*) AS count, MAX(last_seen_at) AS last_seen_at FROM devices WHERE status='active'").first(),
-    env.DB.prepare(
+  const reports = await env.DB.prepare(
       `SELECT r.id, r.employee_id, r.period_start, r.period_end, r.received_at, e.department,
        r.content_cipher, r.content_nonce, m.categories_json
        FROM reports r JOIN employees e ON e.id=r.employee_id
        LEFT JOIN report_metrics m ON m.report_id=r.id
        WHERE e.status='active' ORDER BY r.period_start DESC LIMIT 200`,
-    ).all(),
-  ]);
-  const rows = [];
+    ).all();
+  const aggregate = new Map();
+  const scopes = new Map();
   let fallbackCount = 0;
   let reportsWithRows = 0;
   for (const report of reports.results) {
+    const scopeKey = [report.period_start, report.period_end, report.department].join("\u0000");
+    const scope = scopes.get(scopeKey) || {
+      periodStart: report.period_start,
+      periodEnd: report.period_end,
+      department: report.department,
+      employeeIds: new Set(),
+    };
+    scope.employeeIds.add(report.employee_id);
+    scopes.set(scopeKey, scope);
     let categories = normalizeCategories(JSON.parse(report.categories_json || "[]"));
     if (!categories.length) {
       const html = await decryptReport(env, report.content_cipher, report.content_nonce);
@@ -348,18 +441,33 @@ async function dashboardSummary(env) {
     }
     reportsWithRows += Number(categories.length > 0);
     for (const item of categories) {
-      rows.push({ periodStart: report.period_start, periodEnd: report.period_end,
-        employeeId: report.employee_id, department: report.department,
-        category: item.category, minutes: item.minutes });
+      const key = [report.period_start, report.period_end, report.department, item.category].join("\u0000");
+      const row = aggregate.get(key) || {
+        periodStart: report.period_start,
+        periodEnd: report.period_end,
+        department: report.department,
+        category: item.category,
+        minutes: 0,
+        employeeIds: new Set(),
+      };
+      row.minutes += item.minutes;
+      row.employeeIds.add(report.employee_id);
+      aggregate.set(key, row);
     }
   }
+  const rows = [...aggregate.values()].map(({ employeeIds, ...row }) => ({
+    ...row,
+    employeeCount: employeeIds.size,
+  }));
   return json({
     source: "Cloudflare D1 / finalized weekly management reports",
     refreshedAt: new Date().toISOString(),
     latestReceivedAt: reports.results[0]?.received_at || null,
-    employeeCount: Number(employees?.count || 0), deviceCount: Number(devices?.count || 0),
-    reportCount: reports.results.length, latestDeviceSyncAt: devices?.last_seen_at || null,
     rows,
+    scopes: [...scopes.values()].map(({ employeeIds, ...scope }) => ({
+      ...scope,
+      employeeCount: employeeIds.size,
+    })),
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
       reportsParsedFromEncryptedContent: fallbackCount,
       reportsWithoutCategoryData: reports.results.length - reportsWithRows },
@@ -399,10 +507,14 @@ async function runRetention(env) {
 
 async function adminApi(request, env, pathname) {
   if (!(await requireAdmin(request, env))) return json({ error: "admin_auth_required" }, 401);
-  if (request.method === "GET" && pathname === "/api/admin/summary") return listSummary(env);
-  if (request.method === "POST" && pathname === "/api/admin/devices") return createDevice(request, env);
-  const contentMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/content$/);
-  if (request.method === "GET" && contentMatch) return reportContent(env, contentMatch[1]);
+  if (request.method === "GET" && pathname === "/api/admin/dashboard") return dashboardSummary(env);
+  if (request.method === "GET" && pathname === "/api/admin/users") {
+    return listUsers(env, new URL(request.url).searchParams.get("department"));
+  }
+  if (request.method === "GET" && pathname === "/api/admin/invitation") return invitationForAdmin(env);
+  if (request.method === "POST" && pathname === "/api/admin/invitation/rotate") {
+    return json({ invitationCode: await rotateInvitation(env) }, 201);
+  }
   return json({ error: "not_found" }, 404);
 }
 
@@ -427,11 +539,11 @@ export default {
         await ensureSchema(env);
         return uploadReport(request, env);
       }
-      if (url.pathname === "/api/health") return json({ ok: true, database: Boolean(env.DB) });
-      if (request.method === "GET" && url.pathname === "/api/dashboard/summary") {
+      if (request.method === "POST" && url.pathname === "/api/enroll") {
         await ensureSchema(env);
-        return dashboardSummary(env);
+        return enroll(request, env);
       }
+      if (url.pathname === "/api/health") return json({ ok: true, database: Boolean(env.DB) });
       if (request.method !== "GET" || url.pathname !== "/") return json({ error: "not_found" }, 404);
       return new Response(page, {
         headers: {

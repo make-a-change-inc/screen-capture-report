@@ -102,7 +102,9 @@ def test_required_onboarding_secret_gate_fails_closed() -> None:
     secrets = MemorySecretStore({"gemini_api_key": "synthetic", "employee_id": "employee-1"})
     assert not has_required_onboarding_secrets(secrets)
 
+    secrets.set("display_name", "Synthetic User")
     secrets.set("department", "QA")
+    secrets.set("admin_upload_token", "synthetic-token")
     assert has_required_onboarding_secrets(secrets)
 
 
