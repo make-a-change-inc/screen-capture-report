@@ -329,7 +329,7 @@ async function dashboardSummary(env) {
     env.DB.prepare("SELECT COUNT(*) AS count FROM employees WHERE status='active'").first(),
     env.DB.prepare("SELECT COUNT(*) AS count, MAX(last_seen_at) AS last_seen_at FROM devices WHERE status='active'").first(),
     env.DB.prepare(
-      `SELECT r.id, r.period_start, r.period_end, r.received_at, e.department,
+      `SELECT r.id, r.employee_id, r.period_start, r.period_end, r.received_at, e.department,
        r.content_cipher, r.content_nonce, m.categories_json
        FROM reports r JOIN employees e ON e.id=r.employee_id
        LEFT JOIN report_metrics m ON m.report_id=r.id
@@ -349,7 +349,8 @@ async function dashboardSummary(env) {
     reportsWithRows += Number(categories.length > 0);
     for (const item of categories) {
       rows.push({ periodStart: report.period_start, periodEnd: report.period_end,
-        department: report.department, category: item.category, minutes: item.minutes });
+        employeeId: report.employee_id, department: report.department,
+        category: item.category, minutes: item.minutes });
     }
   }
   return json({
