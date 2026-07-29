@@ -33,7 +33,7 @@ test("invitation enrollment accepts only final weekly aggregate reports", async 
   const enrolled = await fetch("/api/enroll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ inviteCode: activeInvitationCode, displayName: "山田 花子", employeeId: "employee-1", department: "開発部" }) });
   assert.equal(enrolled.status, 201);
   const { deviceToken } = await enrolled.json();
-  const report = { schema_version: 1, report_id: "report-2026-07-13-yamada", period_start: "2026-07-13", period_end: "2026-07-19", revision: 1, kind: "weekly", audience: "management", finalized: true, generated_at: "2026-07-20T00:00:00.000Z", report_html: "<h1>週次管理レポート</h1>", metrics: { activeMinutes: 1200, categories: [{ category: "development", minutes: 720 }] } };
+  const report = { schema_version: 1, report_id: "report-2026-07-13-yamada", period_start: "2026-07-13", period_end: "2026-07-19", revision: 1, kind: "weekly", audience: "management", finalized: true, generated_at: "2026-07-20T00:00:00.000Z", report_html: "<h1>週次管理レポート</h1>", metrics: { activeMinutes: 1200, categories: [{ category: "data_entry", minutes: 720 }, { category: "other", minutes: 60 }] } };
   const upload = { method: "POST", headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json", "idempotency-key": report.report_id }, body: JSON.stringify(report) };
   assert.equal((await fetch("/api/v1/device/reports/weekly-management", upload)).status, 201);
   assert.equal((await fetch("/api/v1/device/reports/weekly-management", { ...upload, headers: { ...upload.headers, "idempotency-key": "daily" }, body: JSON.stringify({ ...report, report_id: "daily", kind: "daily", audience: "employee" }) })).status, 422);
@@ -43,7 +43,7 @@ test("invitation enrollment accepts only final weekly aggregate reports", async 
   assert.deepEqual(usersBody.users, [{ employeeId: "employee-1", displayName: "山田 花子", department: "開発部" }]);
   const dashboard = await fetch("/api/admin/dashboard", { headers: adminHeaders });
   const dashboardBody = await dashboard.json();
-  assert.deepEqual(dashboardBody.rows, [{ periodStart: "2026-07-13", periodEnd: "2026-07-19", department: "開発部", category: "development", minutes: 720, employeeCount: 1 }]);
+  assert.deepEqual(dashboardBody.rows, [{ periodStart: "2026-07-13", periodEnd: "2026-07-19", department: "開発部", category: "データ入力・転記", minutes: 720, employeeCount: 1 }]);
   assert.doesNotMatch(JSON.stringify(dashboardBody), /employee-1/);
 
   const reenrolled = await fetch("/api/enroll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ inviteCode: activeInvitationCode, displayName: "山田 花子", employeeId: "employee-1", department: "開発部" }) });

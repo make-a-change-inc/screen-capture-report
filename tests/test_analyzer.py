@@ -25,7 +25,7 @@ class SuccessfulGateway:
         return AnalysisResponse(
             items=[
                 AnalysisItem(
-                    category="development",
+                    category="data_entry",
                     summary="Synthetic implementation work",
                     confidence=0.9,
                     estimated_minutes=interval_minutes * len(capture_ids),
@@ -85,7 +85,7 @@ def test_analysis_persists_structured_log_and_deletes_capture(database, files, s
         datetime(2026, 7, 16, tzinfo=UTC),
         datetime(2026, 7, 17, tzinfo=UTC),
     )
-    assert logs[0]["category"] == "development"
+    assert logs[0]["category"] == "data_entry"
     assert logs[0]["capture_ids"] == [capture_id]
     assert b"Synthetic implementation work" not in database.path.read_bytes()
 
@@ -111,6 +111,26 @@ def test_analysis_failure_stays_retryable(database, files, settings) -> None:
     )
     assert retry.process_pending(force=True) == 1
     assert database.get_capture(capture_id).status == "analyzed"
+
+
+def test_low_confidence_analysis_is_stored_as_other(database, files, settings) -> None:
+    class LowConfidenceGateway(SuccessfulGateway):
+        def analyze(self, **kwargs):
+            response = super().analyze(**kwargs)
+            response.items[0].confidence = 0.59
+            return response
+
+    settings.analysis_batch_size = 1
+    capturer, coordinator = build(database, files, settings, LowConfidenceGateway())
+    capturer.capture(now=datetime(2026, 7, 16, 10, 0, tzinfo=UTC))
+
+    assert coordinator.process_pending(force=True) == 1
+    logs = database.list_work_logs(
+        datetime(2026, 7, 16, tzinfo=UTC),
+        datetime(2026, 7, 17, tzinfo=UTC),
+    )
+    assert logs[0]["category"] == "other"
+    assert logs[0]["summary"] == "分類の確信度が低いため、その他として集計"
 
 
 def test_analysis_queue_survives_database_restart(tmp_path, settings) -> None:

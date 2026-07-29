@@ -28,6 +28,15 @@ const bytesToBase64 = (value) => {
   return btoa(binary);
 };
 
+const categoryLabels = {
+  email: "メール",
+  documents: "資料作成",
+  data_entry: "データ入力・転記",
+  meeting_minutes: "会議・議事録",
+  research: "調査",
+  other: "その他",
+};
+
 async function sha256(value) {
   return hex(await crypto.subtle.digest("SHA-256", typeof value === "string" ? enc.encode(value) : value));
 }
@@ -441,6 +450,9 @@ async function dashboardSummary(env) {
     }
     reportsWithRows += Number(categories.length > 0);
     for (const item of categories) {
+      // Low-confidence Gemini classifications are retained in the employee's
+      // local log as "other", but never become an AI investment candidate.
+      if (item.category === "other") continue;
       const key = [report.period_start, report.period_end, report.department, item.category].join("\u0000");
       const row = aggregate.get(key) || {
         periodStart: report.period_start,
@@ -457,6 +469,7 @@ async function dashboardSummary(env) {
   }
   const rows = [...aggregate.values()].map(({ employeeIds, ...row }) => ({
     ...row,
+    category: categoryLabels[row.category] || row.category,
     employeeCount: employeeIds.size,
   }));
   return json({

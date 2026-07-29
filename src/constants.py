@@ -11,14 +11,10 @@ PURPOSE_LIMITATION = (
 
 DEFAULT_CATEGORIES = [
     {"id": "email", "label": "メール"},
-    {"id": "chat_meeting", "label": "チャット・会議"},
     {"id": "documents", "label": "資料作成"},
-    {"id": "development", "label": "開発・技術作業"},
-    {"id": "research", "label": "調査・閲覧"},
-    {"id": "administration", "label": "データ入力・事務"},
-    {"id": "customer_support", "label": "顧客対応"},
-    {"id": "management", "label": "管理・計画"},
-    {"id": "break_idle", "label": "休憩・離席"},
+    {"id": "data_entry", "label": "データ入力・転記"},
+    {"id": "meeting_minutes", "label": "会議・議事録"},
+    {"id": "research", "label": "調査"},
     {"id": "other", "label": "その他"},
 ]
 

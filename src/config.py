@@ -63,6 +63,7 @@ class Settings:
     capture_mode: str = "active_window"
     capture_interval_seconds: int = 60
     analysis_batch_size: int = 5
+    analysis_confidence_threshold: float = 0.60
     work_start: str = "08:00"
     work_end: str = "20:00"
     work_weekdays: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4])
@@ -130,6 +131,8 @@ class Settings:
             raise ValueError("capture_interval_seconds must be at least 10")
         if self.analysis_batch_size < 1:
             raise ValueError("analysis_batch_size must be positive")
+        if not 0 <= self.analysis_confidence_threshold <= 1:
+            raise ValueError("analysis_confidence_threshold must be between 0 and 1")
         if self.idle_threshold_seconds < 60:
             raise ValueError("idle_threshold_seconds must be at least 60")
         if self.max_image_edge < 320:
