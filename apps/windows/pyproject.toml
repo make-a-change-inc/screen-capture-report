@@ -1,0 +1,25 @@
+[project]
+name = "screen-capture-report"
+version = "0.3.0"
+description = "Privacy-first Windows workflow capture and analysis POC"
+requires-python = ">=3.11,<3.15"
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_unused_ignores = true
+exclude = ["build", "dist"]

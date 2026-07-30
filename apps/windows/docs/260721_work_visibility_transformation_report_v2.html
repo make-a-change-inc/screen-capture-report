@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WORK VISIBILITY AI ─ AI化トランスフォーメーション</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#131c33; --ink2:#1c2745;
+    --paper:#f4f6fa; --card:#ffffff;
+    --line:#e5e9f0; --line2:#eef1f6;
+    --gray:#6b7488; --gray2:#9aa2b4;
+    --accent:#2b52d4; --accent-bg:#eef2fd;
+    --save:#1f9d63; --save-bg:#e9f6ef;
+    --warn:#c77a1a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:"Noto Sans JP",sans-serif;background:var(--paper);color:var(--ink);line-height:1.7;-webkit-font-smoothing:antialiased;}
+  .num{font-family:"Inter",sans-serif;font-feature-settings:"tnum";}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 28px;}
+
+  /* トップバー */
+  .topbar{background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10;}
+  .topbar .wrap{display:flex;align-items:center;justify-content:space-between;height:64px;}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .brand .logo{width:34px;height:34px;border-radius:8px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-family:"Inter";font-weight:800;font-size:13px;letter-spacing:.5px;}
+  .brand .bt{font-size:13px;font-weight:700;letter-spacing:.04em;line-height:1.25;}
+  .brand .bs{font-size:11px;color:var(--gray2);}
+  .crumb{font-size:12px;color:var(--gray2);font-family:"Inter";letter-spacing:.08em;}
+  .crumb b{color:var(--ink);font-family:"Noto Sans JP";font-weight:700;letter-spacing:0;margin-left:8px;}
+  .status{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--gray);}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--save);}
+
+  /* ヒーロー */
+  .head{padding:44px 0 12px;}
+  .head .kicker{font-family:"Inter";font-size:12px;font-weight:700;letter-spacing:.18em;color:var(--accent);}
+  .head h1{font-size:clamp(26px,3.4vw,40px);font-weight:900;letter-spacing:-.01em;line-height:1.32;margin-top:10px;}
+  .head h1 .u{color:var(--accent);}
+  .head p{color:var(--gray);font-size:14.5px;margin-top:10px;max-width:660px;}
+
+  /* サマリー帯 */
+  .summary{background:var(--ink);color:#fff;border-radius:16px;padding:24px 28px;margin:22px 0 8px;display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;}
+  .summary .sl{font-size:12px;letter-spacing:.14em;color:#9fb0d8;font-family:"Inter";font-weight:700;}
+  .summary .st{font-size:16px;font-weight:700;margin-top:4px;}
+  .summary .sr{text-align:right;}
+  .summary .sr .big{font-family:"Inter";font-weight:900;font-size:clamp(34px,5vw,52px);line-height:1;color:#fff;}
+  .summary .sr .big .unit{font-size:20px;color:#9fb0d8;margin-left:4px;}
+  .summary .sr .sub{font-size:12px;color:#9fb0d8;margin-top:6px;}
+
+  /* メタ */
+  .meta{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 14px;font-size:12px;color:var(--gray);}
+  .chip{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 12px;}
+  .chip b{color:var(--ink);font-weight:700;}
+
+  /* リスト */
+  .list{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;}
+  .row{
+    display:grid;
+    grid-template-columns:210px 1fr 96px 44px 160px 44px 96px 118px;
+    align-items:center;
+    gap:0;
+    padding:0 20px;
+    border-bottom:1px solid var(--line2);
+    min-height:74px;
+  }
+  .row:last-child{border-bottom:none;}
+  .row.header{min-height:44px;background:#fafbfd;}
+  .row.header div{font-family:"Inter";font-size:10.5px;font-weight:700;letter-spacing:.1em;color:var(--gray2);text-transform:uppercase;}
+  .row .c{padding:12px 10px;}
+
+  /* 担当 */
+  .who{display:flex;align-items:center;gap:11px;}
+  .who .av{width:34px;height:34px;border-radius:9px;background:var(--accent-bg);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0;}
+  .who .dept{font-size:11px;color:var(--gray2);}
+  .who .name{font-size:14px;font-weight:700;line-height:1.3;}
+
+  /* 業務 */
+  .task{font-size:13.5px;font-weight:500;color:var(--ink);}
+
+  /* 現状h */
+  .before-h{text-align:right;}
+  .before-h .n{font-family:"Inter";font-weight:900;font-size:23px;line-height:1;}
+  .before-h .u{font-size:11px;color:var(--gray2);margin-left:2px;}
+  .before-h .lab{font-size:10px;color:var(--gray2);margin-top:2px;}
+
+  /* 矢印 */
+  .arw{display:flex;justify-content:center;color:#c9d1e0;}
+  .arw svg{width:20px;height:20px;}
+  .arw.acc{color:var(--accent);}
+
+  /* AI（機能名） */
+  .ai{display:flex;justify-content:center;}
+  .ai .pill{background:var(--accent-bg);color:var(--accent);border-radius:9px;padding:8px 12px;text-align:center;width:100%;}
+  .ai .pill .nm{font-size:13px;font-weight:700;line-height:1.3;}
+  .ai .pill .fn{font-size:9.5px;font-family:"Inter";font-weight:700;letter-spacing:.06em;opacity:.7;margin-top:1px;}
+
+  /* 想定h */
+  .after-h{text-align:right;}
+  .after-h .n{font-family:"Inter";font-weight:900;font-size:23px;line-height:1;color:var(--save);}
+  .after-h .u{font-size:11px;color:#7dc4a2;margin-left:2px;}
+  .after-h .lab{font-size:10px;color:var(--gray2);margin-top:2px;}
+
+  /* 削減 */
+  .cut{text-align:right;}
+  .cut .n{font-family:"Inter";font-weight:800;font-size:16px;color:var(--save);}
+  .cut .rate{display:inline-block;font-family:"Inter";font-size:11px;font-weight:700;color:var(--save);background:var(--save-bg);border-radius:6px;padding:2px 7px;margin-top:4px;}
+
+  /* 回収バー */
+  .recover{
+    background:var(--accent-bg);border:1px solid #d7e0fb;border-radius:14px;
+    padding:18px 22px;margin:16px 0 8px;display:flex;align-items:center;gap:14px;
+  }
+  .recover svg{width:22px;height:22px;color:var(--accent);flex-shrink:0;}
+  .recover .t{font-size:14px;}
+  .recover .t b{color:var(--accent);font-weight:900;}
+  .recover .t span{color:var(--gray);font-size:12.5px;}
+
+  /* 注記 */
+  .note{font-size:12px;color:var(--gray2);padding:14px 0 40px;line-height:1.75;}
+  .note b{color:var(--gray);}
+  .note .warn{color:var(--warn);font-weight:700;}
+
+  @media(max-width:960px){
+    .row{grid-template-columns:1fr 1fr;grid-auto-rows:auto;min-height:auto;padding:14px 16px;gap:6px 12px;border-bottom:6px solid var(--paper);}
+    .row.header{display:none;}
+    .who{grid-column:1 / -1;}
+    .task{grid-column:1 / -1;color:var(--gray);font-size:13px;}
+    .arw{display:none;}
+    .before-h,.after-h{text-align:left;}
+    .before-h::before{content:"現状";display:block;font-size:10px;color:var(--gray2);}
+    .after-h::before{content:"AI導入後（想定）";display:block;font-size:10px;color:var(--gray2);}
+    .ai{grid-column:1 / -1;justify-content:flex-start;}
+    .ai .pill{width:auto;display:inline-block;}
+    .cut{grid-column:1 / -1;text-align:left;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div class="wrap">
+      <div class="brand">
+        <div class="logo">WV</div>
+        <div>
+          <div class="bt">WORK VISIBILITY AI</div>
+          <div class="bs">株式会社ライトアップ</div>
+        </div>
+      </div>
+      <div class="crumb">A-02<b>AI化トランスフォーメーション</b></div>
+      <div class="status"><span class="dot"></span>全システム正常</div>
+    </div>
+  </div>
+
+  <div class="wrap">
+
+    <div class="head">
+      <div class="kicker">AI TRANSFORMATION REPORT</div>
+      <h1>この作業を、<span class="u">このAIで</span>、こう変える。</h1>
+      <p>実測ログで特定した「誰の・どの作業が・何時間か」に、対応するAIを当てた場合の削減見込みです。可視化＝診断、ここから先が処方箋。氏名はデモ用サンプル、数字はすべて想定値です。</p>
+    </div>
+
+    <div class="summary">
+      <div>
+        <div class="sl">10名の実測から / 合計月間</div>
+        <div class="st">対象10名の作業をAI化した場合の削減見込み</div>
+      </div>
+      <div class="sr">
+        <div class="big num">−134.3<span class="unit">h / 月</span></div>
+        <div class="sub">169.3時間 → 35.0時間（想定・10名合計）</div>
+      </div>
+    </div>
+
+    <div class="meta">
+      <span class="chip">対象期間 <b>2026.07 実測から換算</b></span>
+      <span class="chip">対象 <b>10名（デモ用サンプル）</b></span>
+      <span class="chip" style="color:var(--warn)">数字は<b style="color:var(--warn)">すべて想定値（要・実データ差し替え）</b></span>
+    </div>
+
+    <div class="list">
+
+      <!-- ヘッダ -->
+      <div class="row header">
+        <div class="c">担当</div>
+        <div class="c">対象作業</div>
+        <div class="c" style="text-align:right">現状 / 月</div>
+        <div class="c"></div>
+        <div class="c" style="text-align:center">AI化</div>
+        <div class="c"></div>
+        <div class="c" style="text-align:right">導入後</div>
+        <div class="c" style="text-align:right">削減</div>
+      </div>
+
+      <!-- 1 -->
+      <div class="row">
+        <div class="c who"><div class="av">鈴</div><div><div class="dept">営業部</div><div class="name">鈴木 一郎</div></div></div>
+        <div class="c task">会議の議事録作成・共有</div>
+        <div class="c before-h"><span class="n num">26.0</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">議事録AI</div><div class="fn">文字起こし＋要約</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">2.0</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−24.0h</div><div class="rate num">92%減</div></div>
+      </div>
+
+      <!-- 2 -->
+      <div class="row">
+        <div class="c who"><div class="av">田</div><div><div class="dept">営業部</div><div class="name">田中 美咲</div></div></div>
+        <div class="c task">提案書・営業資料の作成</div>
+        <div class="c before-h"><span class="n num">22.5</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">資料作成AI</div><div class="fn">初稿の自動生成</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">6.0</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−16.5h</div><div class="rate num">73%減</div></div>
+      </div>
+
+      <!-- 3 -->
+      <div class="row">
+        <div class="c who"><div class="av">佐</div><div><div class="dept">マーケ部</div><div class="name">佐藤 健</div></div></div>
+        <div class="c task">SNSの投稿・運用</div>
+        <div class="c before-h"><span class="n num">18.0</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">SNS運用AI</div><div class="fn">投稿・反応の自動化</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">2.0</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−16.0h</div><div class="rate num">89%減</div></div>
+      </div>
+
+      <!-- 4 -->
+      <div class="row">
+        <div class="c who"><div class="av">高</div><div><div class="dept">営業部</div><div class="name">高橋 直樹</div></div></div>
+        <div class="c task">定型メールの返信</div>
+        <div class="c before-h"><span class="n num">16.8</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">メール返信AI</div><div class="fn">下書き自動生成</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">4.0</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−12.8h</div><div class="rate num">76%減</div></div>
+      </div>
+
+      <!-- 5 -->
+      <div class="row">
+        <div class="c who"><div class="av">伊</div><div><div class="dept">管理部</div><div class="name">伊藤 彩</div></div></div>
+        <div class="c task">データ入力・転記</div>
+        <div class="c before-h"><span class="n num">20.0</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">転記AI</div><div class="fn">OCR＋自動転記</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">3.0</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−17.0h</div><div class="rate num">85%減</div></div>
+      </div>
+
+      <!-- 6 -->
+      <div class="row">
+        <div class="c who"><div class="av">渡</div><div><div class="dept">IS部</div><div class="name">渡辺 翔</div></div></div>
+        <div class="c task">電話の一次対応</div>
+        <div class="c before-h"><span class="n num">14.0</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">電話応対AI</div><div class="fn">一次受け・要約</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">5.0</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−9.0h</div><div class="rate num">64%減</div></div>
+      </div>
+
+      <!-- 7 -->
+      <div class="row">
+        <div class="c who"><div class="av">山</div><div><div class="dept">営業部</div><div class="name">山本 拓也</div></div></div>
+        <div class="c task">見積書の作成</div>
+        <div class="c before-h"><span class="n num">12.5</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">見積作成AI</div><div class="fn">項目の自動起票</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">3.5</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−9.0h</div><div class="rate num">72%減</div></div>
+      </div>
+
+      <!-- 8 -->
+      <div class="row">
+        <div class="c who"><div class="av">中</div><div><div class="dept">マーケ部</div><div class="name">中村 かおり</div></div></div>
+        <div class="c task">問い合わせ・FAQ対応</div>
+        <div class="c before-h"><span class="n num">15.5</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">問い合わせ対応AI</div><div class="fn">一次回答の自動化</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">4.5</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−11.0h</div><div class="rate num">71%減</div></div>
+      </div>
+
+      <!-- 9 -->
+      <div class="row">
+        <div class="c who"><div class="av">小</div><div><div class="dept">営業部</div><div class="name">小林 誠</div></div></div>
+        <div class="c task">顧客リストの精査・整理</div>
+        <div class="c before-h"><span class="n num">11.0</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">リスト精査AI</div><div class="fn">名寄せ・優先度付け</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">2.0</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−9.0h</div><div class="rate num">82%減</div></div>
+      </div>
+
+      <!-- 10 -->
+      <div class="row">
+        <div class="c who"><div class="av">加</div><div><div class="dept">人事部</div><div class="name">加藤 麻衣</div></div></div>
+        <div class="c task">採用スカウト文の作成</div>
+        <div class="c before-h"><span class="n num">13.0</span><span class="u">h</span></div>
+        <div class="c arw acc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c ai"><div class="pill"><div class="nm">スカウト文AI</div><div class="fn">個別文面の自動生成</div></div></div>
+        <div class="c arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="c after-h"><span class="n num">3.0</span><span class="u">h</span></div>
+        <div class="c cut"><div class="n num">−10.0h</div><div class="rate num">77%減</div></div>
+      </div>
+
+    </div>
+
+    <!-- 回収バー（製品名は本文に出さず、ここでまとめて回収） -->
+    <div class="recover">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6 4.4 2.3 7.2-6.3-4.6L5.7 21l2.3-7.2-6-4.4h7.6z"/></svg>
+      <div class="t"><b>上記のAIは、すべてライトアップが提供します。</b> <span>可視化で見つけた各業務に、そのまま導入・伴走まで。「どれから始めるか」も含めてご提案します。</span></div>
+    </div>
+
+    <div class="note">
+      <b>読み方：</b>左＝実測した現状の工数、中央＝当てるAIの種類、右＝導入後の想定工数。実測で時間がかかっており、かつ当社で対応できる作業を優先表示しています。<br>
+      <span class="warn">※ 本画面はたたき台（v2）。</span> 氏名はデモ用サンプル、削減率・時間はすべて想定値です。実導入時は初月の実測ログで補正します。<br>
+      ※ このレポートは<b>業務改善のための集計</b>であり、個人の勤務態度の評価には使用しません。
+    </div>
+
+  </div>
+
+</body>
+</html>

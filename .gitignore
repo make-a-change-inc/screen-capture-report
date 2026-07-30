@@ -30,3 +30,16 @@ dist/
 *.app
 *.egg-info/
 *.spec
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+e2e-evidence/
+
+# Node.js and Cloudflare
+node_modules/
+.wrangler/
+.test-deps/
+.test-tmp/
+admin-web/.production-credentials.dpapi

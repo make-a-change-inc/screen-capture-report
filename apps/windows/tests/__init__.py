@@ -1,0 +1,1 @@
+"""ScreenCaptureReport test suite."""
