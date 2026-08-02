@@ -121,6 +121,7 @@ settings_store.save(settings)
 secrets = DPAPIFileSecretStore(data_dir / "secrets.dpapi.json")
 for key, value in {
     "gemini_api_key": "synthetic-ci-key",
+    "company_code": "synthetic-company-code",
     "employee_id": "synthetic-ci-user",
     "department": "synthetic-ci-department",
     "privacy_contact": "synthetic-ci-contact",

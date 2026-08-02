@@ -1,4 +1,4 @@
-import { dashboardPage as page } from "./dashboard-page.js";
+import { adminPage as page } from "./admin-page.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -69,6 +69,8 @@ async function decryptReport(env, cipher, nonce) {
 }
 
 const schemaStatements = [
+  `CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS employees (id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
     department TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL,
@@ -90,6 +92,13 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, actor_type TEXT NOT NULL,
     actor_id TEXT, action TEXT NOT NULL, target_type TEXT, target_id TEXT,
     occurred_at TEXT NOT NULL, metadata_json TEXT)`,
+  `CREATE TABLE IF NOT EXISTS company_employees (company_id TEXT NOT NULL,
+    employee_id TEXT NOT NULL UNIQUE, external_employee_id TEXT NOT NULL,
+    PRIMARY KEY(company_id, external_employee_id))`,
+  `CREATE TABLE IF NOT EXISTS company_devices (company_id TEXT NOT NULL,
+    device_id TEXT NOT NULL UNIQUE)`,
+  `CREATE TABLE IF NOT EXISTS company_reports (company_id TEXT NOT NULL,
+    report_id TEXT NOT NULL UNIQUE)`,
 ];
 
 async function ensureSchema(env) {
@@ -97,12 +106,71 @@ async function ensureSchema(env) {
   await env.DB.batch(schemaStatements.map((statement) => env.DB.prepare(statement)));
 }
 
+async function companyByCode(env, companyCode) {
+  if (!companyCode || companyCode.length > 100) return null;
+  return env.DB.prepare(
+    "SELECT id, name FROM companies WHERE code_hash=? AND status='active'",
+  ).bind(await sha256(companyCode)).first();
+}
+
+async function bootstrapCompany(env, companyCode, migrateLegacy = true, requestedName = "") {
+  let company = await companyByCode(env, companyCode);
+  if (company) {
+    const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM companies").first();
+    if (migrateLegacy && Number(count?.count || 0) === 1) {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO company_employees (company_id, employee_id, external_employee_id)
+           SELECT ?, id, id FROM employees`,
+        ).bind(company.id),
+        env.DB.prepare(
+          "INSERT OR IGNORE INTO company_devices (company_id, device_id) SELECT ?, id FROM devices",
+        ).bind(company.id),
+        env.DB.prepare(
+          "INSERT OR IGNORE INTO company_reports (company_id, report_id) SELECT ?, id FROM reports",
+        ).bind(company.id),
+      ]);
+    }
+    return company;
+  }
+  if (!companyCode || companyCode.length > 100) return null;
+  const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM companies").first();
+  const isFirstCompany = Number(count?.count || 0) === 0;
+  const companyId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const companyName = String(requestedName || "").trim().slice(0, 128);
+  const statements = [
+    env.DB.prepare(
+      "INSERT INTO companies (id, code_hash, name, status, created_at) VALUES (?, ?, ?, 'active', ?)",
+    ).bind(
+      companyId, await sha256(companyCode),
+      companyName || (isFirstCompany ? env.DEFAULT_COMPANY_NAME || "既存企業" : "Company"), now,
+    ),
+  ];
+  if (isFirstCompany && migrateLegacy) statements.push(
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO company_employees (company_id, employee_id, external_employee_id)
+       SELECT ?, id, id FROM employees`,
+    ).bind(companyId),
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO company_devices (company_id, device_id) SELECT ?, id FROM devices",
+    ).bind(companyId),
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO company_reports (company_id, report_id) SELECT ?, id FROM reports",
+    ).bind(companyId),
+  );
+  await env.DB.batch(statements);
+  return companyByCode(env, companyCode);
+}
+
 async function requireAdmin(request, env) {
+  const companyCode = request.headers.get("x-company-code") || "";
   const email = (request.headers.get("x-admin-email") || "").trim().toLowerCase();
   const password = request.headers.get("x-admin-password") || "";
   const expectedEmail = (env.ADMIN_EMAIL || "admin@screen-capture-report.local").trim().toLowerCase();
   const expectedPasswordHash = env.ADMIN_PASSWORD_HASH || env.BOOTSTRAP_ADMIN_HASH || "";
-  return email === expectedEmail && timingSafeMatch(password, expectedPasswordHash);
+  if (email !== expectedEmail || !(await timingSafeMatch(password, expectedPasswordHash))) return null;
+  return bootstrapCompany(env, companyCode);
 }
 
 async function requireDevice(request, env) {
@@ -110,8 +178,9 @@ async function requireDevice(request, env) {
   if (!authorization.startsWith("Bearer ")) return null;
   const tokenHash = await sha256(authorization.slice(7));
   const device = await env.DB.prepare(
-    `SELECT devices.*, employees.display_name, employees.department
+    `SELECT devices.*, employees.display_name, employees.department, cd.company_id
      FROM devices JOIN employees ON employees.id=devices.employee_id
+     JOIN company_devices cd ON cd.device_id=devices.id
      WHERE devices.token_hash=? AND devices.status='active' AND employees.status='active'`,
   ).bind(tokenHash).first();
   return device || null;
@@ -127,6 +196,8 @@ async function audit(env, actorType, actorId, action, targetType, targetId, meta
 }
 
 async function createDevice(request, env) {
+  const company = await requireAdmin(request, env);
+  if (!company) return json({ error: "admin_auth_required" }, 401);
   const body = await request.json();
   const displayName = String(body.displayName || "").trim();
   const department = String(body.department || "").trim();
@@ -148,9 +219,59 @@ async function createDevice(request, env) {
       `INSERT INTO devices (id, employee_id, name, token_hash, status, created_at)
        VALUES (?, ?, ?, ?, 'active', ?)`,
     ).bind(deviceId, employeeId, deviceName, await sha256(token), now),
+    env.DB.prepare(
+      `INSERT OR REPLACE INTO company_employees
+       (company_id, employee_id, external_employee_id) VALUES (?, ?, ?)`,
+    ).bind(company.id, employeeId, String(body.employeeId || employeeId)),
+    env.DB.prepare(
+      "INSERT INTO company_devices (company_id, device_id) VALUES (?, ?)",
+    ).bind(company.id, deviceId),
   ]);
   await audit(env, "admin", "owner", "device.created", "device", deviceId, { employeeId });
   return json({ employeeId, deviceId, deviceToken: token }, 201);
+}
+
+async function registerDevice(request, env) {
+  const body = await request.json();
+  const company = await bootstrapCompany(
+    env, String(body.companyCode || request.headers.get("x-company-code") || ""), false,
+    String(body.companyName || ""),
+  );
+  if (!company) return json({ error: "invalid_company_code" }, 401);
+  const externalEmployeeId = String(body.employeeId || body.displayName || "").trim();
+  const department = String(body.department || "").trim();
+  const deviceName = String(body.deviceName || "").trim();
+  if (!externalEmployeeId || !department || !deviceName) {
+    return json({ error: "invalid_input" }, 400);
+  }
+  let mapping = await env.DB.prepare(
+    "SELECT employee_id FROM company_employees WHERE company_id=? AND external_employee_id=?",
+  ).bind(company.id, externalEmployeeId).first();
+  const employeeId = mapping?.employee_id || crypto.randomUUID();
+  const deviceId = crypto.randomUUID();
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = bytesToBase64(tokenBytes).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO employees (id, display_name, department, status, created_at)
+       VALUES (?, ?, ?, 'active', ?)
+       ON CONFLICT(id) DO UPDATE SET department=excluded.department, status='active'`,
+    ).bind(employeeId, externalEmployeeId, department, now),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO company_employees
+       (company_id, employee_id, external_employee_id) VALUES (?, ?, ?)`,
+    ).bind(company.id, employeeId, externalEmployeeId),
+    env.DB.prepare(
+      `INSERT INTO devices (id, employee_id, name, token_hash, status, created_at)
+       VALUES (?, ?, ?, ?, 'active', ?)`,
+    ).bind(deviceId, employeeId, deviceName, await sha256(token), now),
+    env.DB.prepare(
+      "INSERT INTO company_devices (company_id, device_id) VALUES (?, ?)",
+    ).bind(company.id, deviceId),
+  ]);
+  await audit(env, "device", deviceId, "device.self_registered", "company", company.id);
+  return json({ employeeId: externalEmployeeId, deviceId, deviceToken: token }, 201);
 }
 
 function normalizeReport(body) {
@@ -254,6 +375,9 @@ async function uploadReport(request, env) {
       "INSERT INTO idempotency_keys VALUES (?, ?, ?, ?, ?)",
     ).bind(device.id, idempotencyKey, requestHash, responseBody, now),
     env.DB.prepare("UPDATE devices SET last_seen_at=? WHERE id=?").bind(now, device.id),
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO company_reports (company_id, report_id) VALUES (?, ?)",
+    ).bind(device.company_id, reportId),
   ]);
   await audit(env, "device", device.id, "report.received", "report", reportId, {
     periodStart: report.periodStart,
@@ -265,22 +389,29 @@ async function uploadReport(request, env) {
   });
 }
 
-async function listSummary(env) {
+async function listSummary(env, company) {
   const [employees, reports, departments] = await Promise.all([
     env.DB.prepare(
       `SELECT e.id, e.display_name, e.department, e.status, MAX(d.last_seen_at) AS last_seen_at,
        COUNT(DISTINCT d.id) AS device_count, MAX(r.period_start) AS latest_period
-       FROM employees e LEFT JOIN devices d ON d.employee_id=e.id
-       LEFT JOIN reports r ON r.employee_id=e.id GROUP BY e.id ORDER BY e.display_name`,
-    ).all(),
+       FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
+       LEFT JOIN devices d ON d.employee_id=e.id
+       LEFT JOIN reports r ON r.employee_id=e.id
+       WHERE ce.company_id=? GROUP BY e.id ORDER BY e.display_name`,
+    ).bind(company.id).all(),
     env.DB.prepare(
       `SELECT r.id, r.employee_id, e.display_name, e.department, r.period_start, r.period_end,
        r.revision, r.generated_at, r.received_at, r.content_sha256, m.active_minutes,
        m.idle_minutes, m.categories_json FROM reports r
+       JOIN company_reports cr ON cr.report_id=r.id
        JOIN employees e ON e.id=r.employee_id LEFT JOIN report_metrics m ON m.report_id=r.id
+       WHERE cr.company_id=?
        ORDER BY r.period_start DESC, e.display_name LIMIT 200`,
-    ).all(),
-    env.DB.prepare("SELECT department, COUNT(*) AS count FROM employees GROUP BY department").all(),
+    ).bind(company.id).all(),
+    env.DB.prepare(
+      `SELECT e.department, COUNT(*) AS count FROM company_employees ce
+       JOIN employees e ON e.id=ce.employee_id WHERE ce.company_id=? GROUP BY e.department`,
+    ).bind(company.id).all(),
   ]);
   return json({
     employees: employees.results,
@@ -290,6 +421,7 @@ async function listSummary(env) {
       categories_json: undefined,
     })),
     departments: departments.results,
+    company: { id: company.id, name: company.name },
     refreshedAt: new Date().toISOString(),
   });
 }
@@ -324,17 +456,24 @@ function normalizeCategories(value) {
   });
 }
 
-async function dashboardSummary(env) {
+async function dashboardSummary(env, company) {
   const [employees, devices, reports] = await Promise.all([
-    env.DB.prepare("SELECT COUNT(*) AS count FROM employees WHERE status='active'").first(),
-    env.DB.prepare("SELECT COUNT(*) AS count, MAX(last_seen_at) AS last_seen_at FROM devices WHERE status='active'").first(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
+       WHERE ce.company_id=? AND e.status='active'`,
+    ).bind(company.id).first(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS count, MAX(d.last_seen_at) AS last_seen_at FROM company_devices cd
+       JOIN devices d ON d.id=cd.device_id WHERE cd.company_id=? AND d.status='active'`,
+    ).bind(company.id).first(),
     env.DB.prepare(
       `SELECT r.id, r.employee_id, r.period_start, r.period_end, r.received_at, e.department,
        r.content_cipher, r.content_nonce, m.categories_json
-       FROM reports r JOIN employees e ON e.id=r.employee_id
+       FROM company_reports cr JOIN reports r ON r.id=cr.report_id
+       JOIN employees e ON e.id=r.employee_id
        LEFT JOIN report_metrics m ON m.report_id=r.id
-       WHERE e.status='active' ORDER BY r.period_start DESC LIMIT 200`,
-    ).all(),
+       WHERE cr.company_id=? AND e.status='active' ORDER BY r.period_start DESC LIMIT 200`,
+    ).bind(company.id).all(),
   ]);
   const rows = [];
   let fallbackCount = 0;
@@ -355,6 +494,7 @@ async function dashboardSummary(env) {
   }
   return json({
     source: "Cloudflare D1 / finalized weekly management reports",
+    company: { id: company.id, name: company.name },
     refreshedAt: new Date().toISOString(),
     latestReceivedAt: reports.results[0]?.received_at || null,
     employeeCount: Number(employees?.count || 0), deviceCount: Number(devices?.count || 0),
@@ -366,10 +506,11 @@ async function dashboardSummary(env) {
   });
 }
 
-async function reportContent(env, reportId) {
+async function reportContent(env, company, reportId) {
   const report = await env.DB.prepare(
-    "SELECT content_cipher, content_nonce, content_sha256 FROM reports WHERE id=?",
-  ).bind(reportId).first();
+    `SELECT r.content_cipher, r.content_nonce, r.content_sha256 FROM reports r
+     JOIN company_reports cr ON cr.report_id=r.id WHERE r.id=? AND cr.company_id=?`,
+  ).bind(reportId, company.id).first();
   if (!report) return json({ error: "not_found" }, 404);
   const html = await decryptReport(env, report.content_cipher, report.content_nonce);
   const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
@@ -398,11 +539,12 @@ async function runRetention(env) {
 }
 
 async function adminApi(request, env, pathname) {
-  if (!(await requireAdmin(request, env))) return json({ error: "admin_auth_required" }, 401);
-  if (request.method === "GET" && pathname === "/api/admin/summary") return listSummary(env);
+  const company = await requireAdmin(request, env);
+  if (!company) return json({ error: "admin_auth_required" }, 401);
+  if (request.method === "GET" && pathname === "/api/admin/summary") return listSummary(env, company);
   if (request.method === "POST" && pathname === "/api/admin/devices") return createDevice(request, env);
   const contentMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/content$/);
-  if (request.method === "GET" && contentMatch) return reportContent(env, contentMatch[1]);
+  if (request.method === "GET" && contentMatch) return reportContent(env, company, contentMatch[1]);
   return json({ error: "not_found" }, 404);
 }
 
@@ -424,6 +566,10 @@ export default {
         await ensureSchema(env);
         return adminApi(request, env, url.pathname);
       }
+      if (request.method === "POST" && url.pathname === "/api/v1/device/register") {
+        await ensureSchema(env);
+        return registerDevice(request, env);
+      }
       if (
         request.method === "POST"
         && ["/api/device/reports", "/api/v1/device/reports/weekly-management"].includes(url.pathname)
@@ -434,21 +580,13 @@ export default {
       if (url.pathname === "/api/health") return json({ ok: true, database: Boolean(env.DB) });
       if (request.method === "GET" && url.pathname === "/api/dashboard/summary") {
         await ensureSchema(env);
-        return dashboardSummary(env);
+        const company = await requireAdmin(request, env);
+        if (!company) return json({ error: "admin_auth_required" }, 401);
+        return dashboardSummary(env, company);
       }
-      if (request.method === "GET" && url.pathname === "/admin") {
-        return new Response(legacyPage, {
-          headers: {
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'",
-            "x-frame-options": "DENY",
-            "x-content-type-options": "nosniff",
-            "referrer-policy": "no-referrer",
-          },
-        });
+      if (request.method !== "GET" || !["/", "/admin"].includes(url.pathname)) {
+        return json({ error: "not_found" }, 404);
       }
-      if (request.method !== "GET" || url.pathname !== "/") return json({ error: "not_found" }, 404);
       return new Response(page, {
         headers: {
           "content-type": "text/html; charset=utf-8",
