@@ -20,6 +20,7 @@ from src.config import (
 )
 from src.notifier import EmailNotifier
 from src.platform_win import WindowsPlatform, WindowsSingleInstance
+from src.provisioning import apply_device_provisioning
 from src.reporting import ReportService
 from src.security import EncryptedFileStore, EncryptionService
 from src.service import RuntimeService
@@ -102,6 +103,17 @@ def main() -> int:
     configure_logging(data_dir)
     settings_store = SettingsStore(data_dir / "config.json")
     secrets = WindowsSecretStore(data_dir)
+    if "--provision" in sys.argv:
+        index = sys.argv.index("--provision")
+        if index + 1 >= len(sys.argv):
+            raise SystemExit("--provision requires a JSON file path")
+        apply_device_provisioning(
+            Path(sys.argv[index + 1]).expanduser().resolve(),
+            settings_store=settings_store,
+            secrets=secrets,
+            enable_sync="--enable-management-sync" in sys.argv,
+        )
+        return 0
     if "--purge-secrets" in sys.argv or "--prepare-uninstall" in sys.argv:
         prepare_uninstall_state(data_dir, secrets)
         return 0

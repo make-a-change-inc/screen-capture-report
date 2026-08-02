@@ -432,6 +432,18 @@ export default {
         await ensureSchema(env);
         return dashboardSummary(env);
       }
+      if (request.method === "GET" && url.pathname === "/admin") {
+        return new Response(legacyPage, {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'",
+            "x-frame-options": "DENY",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer",
+          },
+        });
+      }
       if (request.method !== "GET" || url.pathname !== "/") return json({ error: "not_found" }, 404);
       return new Response(page, {
         headers: {

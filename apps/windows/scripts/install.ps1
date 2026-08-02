@@ -1,4 +1,8 @@
-param([switch]$EnableAutostart)
+param(
+    [switch]$EnableAutostart,
+    [string]$ProvisioningFile,
+    [switch]$EnableManagementSync
+)
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
@@ -26,6 +30,21 @@ if ($EnableAutostart) {
     New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
         -Name "ScreenCaptureReport" -Value ('"' + (Join-Path $destination "ScreenCaptureReport.exe") + '"') `
         -PropertyType String -Force | Out-Null
+}
+
+if ($ProvisioningFile) {
+    $resolvedProvisioningFile = (Resolve-Path -LiteralPath $ProvisioningFile).Path
+    $arguments = @("--provision", $resolvedProvisioningFile)
+    if ($EnableManagementSync) {
+        $arguments += "--enable-management-sync"
+    }
+    $provisioningProcess = Start-Process `
+        (Join-Path $destination "ScreenCaptureReport.exe") `
+        -ArgumentList $arguments -PassThru -Wait
+    if ($provisioningProcess.ExitCode -ne 0) {
+        throw "Device provisioning failed with exit code $($provisioningProcess.ExitCode)"
+    }
+    Write-Warning "Provisioning succeeded. Securely delete the provisioning JSON now; it contains a device credential."
 }
 
 Write-Host "Installed per-user to $destination"

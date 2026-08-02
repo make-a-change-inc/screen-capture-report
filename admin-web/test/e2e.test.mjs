@@ -28,6 +28,10 @@ test("management report completes the admin API round trip", async (t) => {
   const anonymous = await fetch("/api/admin/summary");
   assert.equal(anonymous.status, 401);
 
+  const adminPage = await fetch("/admin");
+  assert.equal(adminPage.status, 200);
+  assert.match(await adminPage.text(), /api\/admin\/devices/);
+
   const wrongEmail = await fetch("/api/admin/summary", {
     headers: { "x-admin-email": "other@example.test", "x-admin-password": adminPassword },
   });
