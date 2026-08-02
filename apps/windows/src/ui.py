@@ -17,7 +17,7 @@ from src.config import SecretBackend, Settings, SettingsStore
 from src.constants import PURPOSE_LIMITATION
 from src.platform_win import WindowsPlatform
 from src.reporting import ReportService
-from src.service import RuntimeService
+from src.service import CaptureNotCompleted, RuntimeService
 from src.utils import get_resource_path
 from src.viewer import EmployeeArchive, EmployeeArchiveDay
 
@@ -48,7 +48,7 @@ def onboarding_notice(settings: Settings) -> str:
         + f"\n\n取得頻度: 業務時間中は{settings.capture_interval_seconds}秒ごと。"
             "対象: 既定は前景ウィンドウ（全画面は設定で明示選択）。"
         "画像は分類のためGoogle Gemini APIへ送信されます。"
-        "画像は解析成功直後に削除し、障害時も最大24時間、業務ログは"
+        "画像は本人確認のため暗号化したまま最大24時間保持し、業務ログは"
         f"{settings.log_retention_days}日、レポートは{settings.report_retention_days}日保持します。"
         "本人日報は本人メール、週次集計は経営レポートメールへ送ります。"
         "訂正・削除・事故連絡は下記のプライバシー窓口へ行えます。"
@@ -354,7 +354,11 @@ class WindowsTrayUI:
         self.platform.notify("Screen Capture Report", "画面取得を一時停止しました")
 
     def _capture_now(self, *_args) -> None:
-        self._background("手動取得", lambda: self.service.capture_now())
+        def capture() -> str:
+            capture_id = self.service.capture_now()
+            return f"撮影しました（ID: {capture_id}）"
+
+        self._background("手動取得", capture)
 
     def _analyze_now(self, *_args) -> None:
         self._background("解析", lambda: self.service.analyze_now())
@@ -495,6 +499,10 @@ class WindowsTrayUI:
                 capture_list.insert("end", f"{captured_at:%H:%M:%S}  {item.status}")
             preview.configure(image="", text="画像を選択してください")
             state["photo"] = None
+            if selected_day.captures:
+                capture_list.selection_set(0)
+                select_capture()
+                notebook.select(capture_tab)
 
         def select_capture(_event: Any = None) -> None:
             selection = capture_list.curselection()
@@ -808,7 +816,15 @@ class WindowsTrayUI:
         def run() -> None:
             try:
                 result = operation()
-                self.platform.notify(label, f"完了しました: {result}")
+                self.platform.notify(label, str(result))
+            except CaptureNotCompleted as exc:
+                reason = {
+                    "foreground_unavailable": "撮影対象のウィンドウを取得できませんでした",
+                    "locked": "画面がロックされています",
+                    "excluded": "除外対象の画面です",
+                    "consent_required": "画面取得への同意が必要です",
+                }.get(exc.error_code or exc.status, exc.error_code or exc.status)
+                self.platform.notify(label, f"撮影に失敗しました: {reason}")
             except Exception as exc:
                 self.platform.notify(label, f"失敗しました: {type(exc).__name__}")
 

@@ -5,7 +5,7 @@ from datetime import date, datetime, time, timedelta
 from src.capturer import ScreenCapturer
 from src.config import MemorySecretStore
 from src.reporting import ReportService
-from src.service import RuntimeService, advance_capture_deadline
+from src.service import CaptureNotCompleted, RuntimeService, advance_capture_deadline
 from src.storage import EMPLOYEE_REPORT_ACCESS
 
 from .conftest import FakeMSS, FakePlatform
@@ -15,6 +15,14 @@ from .test_reporting import FakeNotifier, FakeWeeklyGateway
 class DummyCapturer:
     def delete_capture_payload(self, *_args):
         return False
+
+
+class RecordingCapturer(DummyCapturer):
+    def __init__(self, capture_id: str):
+        self.capture_id = capture_id
+
+    def capture(self, **_kwargs):
+        return self.capture_id
 
 
 class DummyAnalyzer:
@@ -70,6 +78,26 @@ def test_capture_deadline_uses_monotonic_cadence_without_burst() -> None:
     assert advance_capture_deadline(100.0, 105.0, 60.0) == 160.0
     assert advance_capture_deadline(160.0, 161.0, 60.0) == 220.0
     assert advance_capture_deadline(100.0, 225.0, 60.0) == 280.0
+
+
+def test_manual_capture_returns_only_a_persisted_payload(database, settings) -> None:
+    failed_id = database.record_capture(
+        "capture_failed", error_code="foreground_unavailable"
+    )
+    service = RuntimeService(
+        database=database,
+        capturer=RecordingCapturer(failed_id),  # type: ignore[arg-type]
+        analyzer=DummyAnalyzer(),
+        reports=RecordingReports(),  # type: ignore[arg-type]
+        settings_provider=lambda: settings,
+    )
+
+    try:
+        service.capture_now()
+    except CaptureNotCompleted as exc:
+        assert exc.error_code == "foreground_unavailable"
+    else:
+        raise AssertionError("failed capture must not be reported as complete")
 
 
 def test_retention_removes_encrypted_report_artifact(database, files, settings) -> None:

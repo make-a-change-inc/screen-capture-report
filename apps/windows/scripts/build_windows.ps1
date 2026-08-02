@@ -62,7 +62,11 @@ if ($iscc) {
     Remove-Item $package -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path "$package\scripts" -Force | Out-Null
     Copy-Item "dist\ScreenCaptureReport" "$package\ScreenCaptureReport" -Recurse -Force
-    Copy-Item "scripts\install.ps1", "scripts\uninstall.ps1" "$package\scripts" -Force
+    Copy-Item `
+        "scripts\install.ps1", `
+        "scripts\uninstall.ps1", `
+        "scripts\new-provisioning-file.ps1" `
+        "$package\scripts" -Force
     Copy-Item "README.md" "$package\README.md" -Force
     Compress-Archive -Path "$package\*" -DestinationPath dist\ScreenCaptureReport-windows-x64.zip -Force
     Write-Host "Inno Setup not found; created zip fallback. Use scripts\install.ps1."

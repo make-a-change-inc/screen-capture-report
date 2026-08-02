@@ -43,3 +43,4 @@ node_modules/
 .test-deps/
 .test-tmp/
 admin-web/.production-credentials.dpapi
+*.scr-provision.json

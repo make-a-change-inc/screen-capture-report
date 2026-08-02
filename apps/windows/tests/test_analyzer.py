@@ -73,6 +73,7 @@ def build(database, files, settings, gateway):
 
 def test_analysis_persists_structured_log_and_deletes_capture(database, files, settings) -> None:
     settings.analysis_batch_size = 1
+    settings.capture_retention_hours = 0
     capturer, coordinator = build(database, files, settings, SuccessfulGateway())
     capture_id = capturer.capture(now=datetime(2026, 7, 16, 10, 0, tzinfo=UTC))
 
@@ -230,7 +231,8 @@ def test_failed_model_attempt_is_written_as_unmeasured_cost(
     settings.analysis_batch_size = 1
     settings.token_input_jpy_per_million = 100.0
     capturer, coordinator = build(database, files, settings, FailingGateway())
-    capturer.capture(now=datetime.now(UTC))
+    # Keep this analyzer test independent of the wall-clock work schedule.
+    capturer.capture(now=datetime.now(UTC), manual=True)
 
     assert coordinator.process_pending(force=True) == 0
 

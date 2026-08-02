@@ -1,7 +1,9 @@
 import json
+import time
 from pathlib import Path
 
 from src.config import MemorySecretStore, Settings, SettingsStore
+from src.service import CaptureNotCompleted
 from src.ui import WindowsTrayUI, _HTMLTextExtractor, onboarding_notice
 
 
@@ -20,9 +22,13 @@ class RecordingService:
 class RecordingPlatform:
     def __init__(self) -> None:
         self.notifications: list[tuple[str, str]] = []
+        self.opened_paths: list[Path] = []
 
     def notify(self, title: str, message: str) -> None:
         self.notifications.append((title, message))
+
+    def open_path(self, path: Path) -> None:
+        self.opened_paths.append(path)
 
 
 class RecordingIcon:
@@ -128,3 +134,32 @@ def test_tray_evidence_contains_only_startup_state(
     assert evidence["service_started"] is True
     assert evidence["error_type"] is None
     assert set(evidence) == {"visible", "service_started", "error_type", "timestamp"}
+
+
+def test_capture_failure_notification_is_not_reported_as_complete(tmp_path: Path) -> None:
+    events: list[str] = []
+    ui, platform = build_ui(tmp_path, events)
+
+    def fail() -> None:
+        raise CaptureNotCompleted("capture_failed", "foreground_unavailable")
+
+    ui._background("手動取得", fail)
+    for _ in range(50):
+        if platform.notifications:
+            break
+        time.sleep(0.01)
+
+    assert platform.notifications
+    title, message = platform.notifications[-1]
+    assert title == "手動取得"
+    assert "失敗" in message
+    assert "完了" not in message
+
+
+def test_open_data_menu_opens_the_capture_and_report_root(tmp_path: Path) -> None:
+    events: list[str] = []
+    ui, platform = build_ui(tmp_path, events)
+
+    ui._open_data()
+
+    assert platform.opened_paths == [tmp_path]
