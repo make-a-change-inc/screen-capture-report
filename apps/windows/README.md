@@ -26,8 +26,7 @@ Windows 10 22H2 / Windows 11 x64向けの、プライバシー優先PC業務分�
 
 ## 管理Webへの端末登録
 
-1. 管理Webの `/admin` で端末を登録し、表示された端末トークンを一度だけ取得します。
-2. `scripts\new-provisioning-file.ps1` でAPI URL、従業員ID、部署、端末トークンを `*.scr-provision.json` にまとめます。端末トークンは `SecureString` で入力します。
+1. 管理Webの `/admin` で端末を登録し、Windows登録ファイル（`*.scr-provision.json`）をダウンロードします。手動作成が必要な場合は `scripts\new-provisioning-file.ps1` を使い、端末トークンを `SecureString` で入力します。
 3. `scripts\install.ps1 -ProvisioningFile <path> -EnableManagementSync` でインストールと登録を行います。同期への本人同意を設定画面で取得する運用では `-EnableManagementSync` を省略します。
 4. トークンはWindows Credential ManagerまたはDPAPIへ保存され、平文設定には保存されません。取り込み後は登録ファイルを安全に削除してください。
 5. アプリ起動後、確定済み週次管理レポートは再試行付きで自動同期されます。生画像、本人日報、ウィンドウタイトルは管理Webへ送信されません。

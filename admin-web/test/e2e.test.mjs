@@ -30,7 +30,10 @@ test("management report completes the admin API round trip", async (t) => {
 
   const adminPage = await fetch("/admin");
   assert.equal(adminPage.status, 200);
-  assert.match(await adminPage.text(), /api\/admin\/devices/);
+  const adminHtml = await adminPage.text();
+  assert.match(adminHtml, /api\/admin\/devices/);
+  assert.match(adminHtml, /\.scr-provision\.json/);
+  assert.match(adminHtml, /admin_api_url:location\.origin/);
 
   const wrongEmail = await fetch("/api/admin/summary", {
     headers: { "x-admin-email": "other@example.test", "x-admin-password": adminPassword },
