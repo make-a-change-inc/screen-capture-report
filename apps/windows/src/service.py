@@ -17,6 +17,14 @@ from src.storage import Database
 logger = logging.getLogger(__name__)
 
 
+class CaptureNotCompleted(RuntimeError):
+    def __init__(self, status: str, error_code: str | None = None):
+        self.status = status
+        self.error_code = error_code
+        detail = f"{status}: {error_code}" if error_code else status
+        super().__init__(detail)
+
+
 def advance_capture_deadline(previous: float, now: float, interval: float) -> float:
     candidate = previous + interval
     if candidate <= now:
@@ -105,7 +113,13 @@ class RuntimeService:
             logger.error("Pause audit failed: %s", type(exc).__name__)
 
     def capture_now(self) -> str:
-        return self.capturer.capture(manual=True, paused=False)
+        capture_id = self.capturer.capture(manual=True, paused=False)
+        record = self.database.get_capture(capture_id)
+        if record is None:
+            raise CaptureNotCompleted("record_unavailable")
+        if record.status != "captured" or not record.file_path:
+            raise CaptureNotCompleted(record.status, record.error_code)
+        return capture_id
 
     def analyze_now(self) -> int:
         return self.analyzer.process_pending(force=True)

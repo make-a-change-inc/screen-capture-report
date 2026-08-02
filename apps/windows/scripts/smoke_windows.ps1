@@ -1,6 +1,7 @@
 param(
     [int]$StartupTimeoutSeconds = 45,
-    [string]$EvidenceDirectory = "dist\smoke-evidence"
+    [string]$EvidenceDirectory = "dist\smoke-evidence",
+    [string]$ExecutablePath = "dist\ScreenCaptureReport\ScreenCaptureReport.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,7 +11,7 @@ if ($env:OS -ne "Windows_NT") {
     throw "This smoke test must run on Windows."
 }
 
-$exe = Resolve-Path "dist\ScreenCaptureReport\ScreenCaptureReport.exe"
+$exe = Resolve-Path $ExecutablePath
 $dataDir = Join-Path $env:TEMP ("ScreenCaptureReport-smoke-" + [guid]::NewGuid())
 $env:SCREEN_CAPTURE_REPORT_DATA_DIR = $dataDir
 $env:SCREEN_CAPTURE_REPORT_STARTUP_DIAGNOSTICS = "1"

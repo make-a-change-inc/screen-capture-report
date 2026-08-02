@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time as time_module
 import uuid
 from collections.abc import Callable
 from datetime import datetime, time
@@ -81,12 +82,16 @@ class ScreenCapturer:
         settings_provider: Callable[[], Settings],
         platform_state: PlatformState,
         mss_factory: Callable[[], MSSContext] = mss.mss,  # type: ignore[assignment]
+        foreground_retry_delay_seconds: float = 0.1,
+        foreground_retry_attempts: int = 6,
     ):
         self.database = database
         self.files = files
         self.settings_provider = settings_provider
         self.platform = platform_state
         self.mss_factory = mss_factory
+        self.foreground_retry_delay_seconds = foreground_retry_delay_seconds
+        self.foreground_retry_attempts = foreground_retry_attempts
 
     def capture(
         self,
@@ -111,11 +116,12 @@ class ScreenCapturer:
         if not manual and self.platform.idle_seconds() >= settings.idle_threshold_seconds:
             return self.database.record_capture("idle", captured_at=now)
 
-        window = self.platform.foreground_window()
+        window = self._foreground_window(manual=manual)
         if window is None:
             return self.database.record_capture(
                 "capture_failed", captured_at=now, error_code="foreground_unavailable"
             )
+
         matcher = ExclusionMatcher(settings)
         rule_id = matcher.match(window)
         if rule_id:
@@ -163,6 +169,40 @@ class ScreenCapturer:
                 captured_at=now,
                 error_code=type(exc).__name__,
             )
+
+    def _foreground_window(self, *, manual: bool) -> WindowInfo | None:
+        """Allow the previous app to regain focus after a tray-menu command.
+
+        Windows can briefly report no foreground window while the notification
+        area menu is closing. Automatic captures do not need this delay, while
+        a manual command should wait briefly instead of producing a false
+        failure.
+        """
+        attempts = self.foreground_retry_attempts if manual else 1
+        for attempt in range(attempts):
+            window = self.platform.foreground_window()
+            if window is not None:
+                return window
+            if attempt + 1 < attempts:
+                time_module.sleep(self.foreground_retry_delay_seconds)
+        # GetForegroundWindow can return NULL for a background tray process
+        # even though an ordinary application window is visible. EnumWindows
+        # returns top-level windows in Z order, so the first inspectable-sized
+        # entry is the closest safe approximation of the active target.
+        try:
+            return next(
+                (
+                    candidate
+                    for candidate in self.platform.visible_windows()
+                    if candidate.title.strip()
+                    and candidate.bounds["width"] >= 64
+                    and candidate.bounds["height"] >= 64
+                    and candidate.process_name.casefold() != "screencapturereport.exe"
+                ),
+                None,
+            )
+        except Exception:
+            return None
 
     def read_capture(self, capture_id: str) -> bytes:
         record = self.database.get_capture(capture_id)

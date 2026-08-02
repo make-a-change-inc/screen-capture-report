@@ -61,7 +61,9 @@ class Settings:
     work_weekdays: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4])
     idle_threshold_seconds: int = 300
     max_image_edge: int = 1280
-    capture_retention_hours: int = 0
+    # Retain encrypted captures long enough for the employee to inspect them
+    # in the local archive. The retention worker enforces this upper bound.
+    capture_retention_hours: int = 24
     log_retention_days: int = 30
     report_retention_days: int = 90
     capture_paused: bool = True

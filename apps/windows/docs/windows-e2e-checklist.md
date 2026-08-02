@@ -12,7 +12,7 @@ Run on a clean Windows 10 22H2 or Windows 11 x64 user account. Save command outp
 8. Open an excluded process/title and an access-denied synthetic process. Confirm status `excluded`, no capture payload, and only an opaque rule ID—never the process/title value—in DB/logs.
 9. Exercise five-minute idle and Win+L lock. Confirm `idle`/`locked`, no payload, and exclusion from the success-rate denominator.
 10. Disconnect network, capture, force analysis, restart the app, reconnect, and confirm the persisted queue is retried successfully.
-11. Confirm analyzed capture payloads are deleted and a retention audit event exists.
+11. Confirm analyzed capture payloads remain encrypted and viewable in the employee archive for up to 24 hours, then are deleted with a retention audit event.
 12. Generate the daily employee report after configured work end and send it to the dedicated test mailbox. Confirm late-day logs are included, TLS rejects an invalid/self-signed server certificate, and send audit/recovery works after one induced SMTP failure.
 13. Generate a previous-week management report. Confirm all three sections and evidence IDs; scan for images, raw titles, ranking, and minute-level individual activity. Induce a Gemini outage, restart, and confirm `report_jobs.next_retry_at` prevents 15-second retry hammering and increases the bounded backoff.
 14. Pause and restart Windows; confirm capture stays paused. Resume, launch a second executable instance, and confirm the named mutex prevents duplicate schedules. If autostart was selected, confirm tray recovery.

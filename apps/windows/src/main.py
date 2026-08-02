@@ -119,6 +119,9 @@ def _run_application(
     settings_store: SettingsStore,
     secrets: WindowsSecretStore,
 ) -> int:
+    # Keep the location visible and predictable even before the first
+    # successful capture. Payloads beneath it remain encrypted at rest.
+    (data_dir / "captures").mkdir(parents=True, exist_ok=True)
     encryption = EncryptionService.from_key_file(data_dir / "data-key.dpapi")
     files = EncryptedFileStore(data_dir, encryption)
     database = Database(data_dir / "screen-capture-report.sqlite3", encryption)
@@ -185,6 +188,9 @@ def _run_application(
     )
 
     try:
+        if "--capture-now-smoke" in sys.argv:
+            service.capture_now()
+            return 0
         if "--viewer-smoke" in sys.argv:
             ui._show_employee_archive_window()
             return 0
