@@ -137,6 +137,11 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(live.status, 200);
   const liveDashboard = await live.json();
   assert.equal(liveDashboard.employeeCount, 2);
+  assert.equal(liveDashboard.employees.length, 2);
+  assert.deepEqual(
+    liveDashboard.employees.map((item) => item.department).sort(),
+    ["QA", "開発部"],
+  );
   assert.equal(liveDashboard.reportCount, 1);
   assert.deepEqual(liveDashboard.rows.map((item) => item.minutes), [720, 480]);
 
