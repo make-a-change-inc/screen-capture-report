@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { dashboardPage } from "../worker/dashboard-page.js";
+import { authenticatedDashboardPage } from "../worker/authenticated-dashboard-page.js";
+
+test("deployed dashboard keeps company-scoped admin authentication", () => {
+  assert.match(authenticatedDashboardPage, /id="loginForm"/);
+  assert.match(authenticatedDashboardPage, /'x-company-code':auth\.code/);
+  assert.match(authenticatedDashboardPage, /source\.company\?\.name/);
+  assert.doesNotMatch(authenticatedDashboardPage, /onclick=load;load\(\)/);
+});
 
 test("dashboard loads live D1 data instead of embedded mock totals", () => {
   assert.match(dashboardPage, /fetch\('\/api\/dashboard\/summary'/);

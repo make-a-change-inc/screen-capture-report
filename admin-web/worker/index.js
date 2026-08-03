@@ -1,4 +1,4 @@
-import { adminPage as page } from "./admin-page.js";
+import { authenticatedDashboardPage as page } from "./authenticated-dashboard-page.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
