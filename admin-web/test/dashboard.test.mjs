@@ -11,6 +11,14 @@ test("deployed dashboard keeps company-scoped admin authentication", () => {
   assert.doesNotMatch(authenticatedDashboardPage, /onclick=load;load\(\)/);
 });
 
+test("invalid credentials stay on login and logout clears the session", () => {
+  assert.match(authenticatedDashboardPage, /throw error}finally/);
+  assert.match(authenticatedDashboardPage, /id="logout"/);
+  assert.match(authenticatedDashboardPage, /sessionStorage\.removeItem\(key\)/);
+  assert.match(authenticatedDashboardPage, /企業コード、管理者ID、またはパスワードが正しくありません/);
+  assert.match(authenticatedDashboardPage, /q\('#login'\)\.style\.display='grid'/);
+});
+
 test("dashboard loads live D1 data instead of embedded mock totals", () => {
   assert.match(dashboardPage, /fetch\('\/api\/dashboard\/summary'/);
   assert.doesNotMatch(dashboardPage, /Cloudflare D1/);
