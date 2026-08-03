@@ -12,8 +12,9 @@ const login = `<div id="login" class="admin-login"><form id="loginForm" class="a
 const loginStyles = `.admin-login{position:fixed;inset:0;display:grid;place-items:center;background:#10131a;z-index:10}.admin-login-card{width:min(420px,92vw);background:#fff;border-radius:16px;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.35)}.admin-login-card h2{margin:8px 0}.admin-login-card p{color:#697083}.admin-login-card input{display:block;width:100%;padding:11px;margin:8px 0;border:1px solid #dfe2e8;border-radius:7px}.admin-login-card button{width:100%;margin-top:4px;background:#2459ad;color:#fff;border:0;border-radius:7px;padding:11px;font-weight:700}.admin-login-error{color:#a23!important}.topbar-actions{display:flex;align-items:center;gap:14px}.logout{border:1px solid #dfe2e8;background:#fff;color:#16181d;border-radius:7px;padding:7px 11px;cursor:pointer}.employee-page{display:none;padding:31px clamp(18px,4vw,52px) 64px}.employee-page h1{margin-bottom:4px}.employee-page .page-description{color:#697083;margin:0 0 22px}.employee-panel{background:#fff;border:1px solid #dfe2e8;border-radius:14px;padding:25px;box-shadow:0 8px 28px rgba(22,28,53,.04);overflow:auto}.employee-table{width:100%;border-collapse:collapse;min-width:620px}.employee-table th,.employee-table td{text-align:left;padding:13px 12px;border-bottom:1px solid #dfe2e8}.employee-table th{color:#697083;font-size:11px}.employee-table td:first-child{font-weight:700}.employee-status{color:#0f7b59;font-weight:700;font-size:12px}`;
 
 const categoryScript = `
-const categoryLabels={other:'その他',administration:'管理・事務',development:'開発',research:'調査・リサーチ',chat_meeting:'チャット・会議',meeting:'会議',documents:'資料作成',document:'資料作成',email:'メール',input:'データ入力',data_entry:'データ入力',marketing:'マーケティング',sns:'SNS・マーケティング',accounting:'経理',account:'経理'};
-function categoryLabel(value){return categoryLabels[String(value||'').toLowerCase()]||String(value||'未分類')}`;
+const categoryLabels={other:'その他（要分類）',administration:'管理・事務',development:'開発',research:'調査・リサーチ',chat_meeting:'チャット・会議',meeting:'会議',documents:'資料作成',document:'資料作成',email:'メール',input:'データ入力',data_entry:'データ入力',marketing:'マーケティング',sns:'SNS・マーケティング',accounting:'経理',account:'経理'};
+function categoryLabel(value){return categoryLabels[String(value||'').toLowerCase()]||String(value||'未分類')}
+function isUnclearCategory(value){return /^(other|misc|unknown)$/i.test(String(value||''))}`;
 
 const authScript = `
 function clearAuth(){for(const key of ['scr-company-code','scr-admin-email','scr-admin-password'])sessionStorage.removeItem(key);auth={code:'',email:'',password:''}}
@@ -54,6 +55,10 @@ export const authenticatedDashboardPage = dashboardPage
     "source=await response.json();if(source.company?.name)q('.company').textContent=source.company.name;q('#employeeRows').innerHTML=source.employees?.length?source.employees.map(item=>'<tr><td>'+esc(item.display_name)+'</td><td>'+esc(item.department)+'</td><td>'+fmtDate(item.last_seen_at)+'</td><td><span class=\"employee-status\">登録済み</span></td></tr>').join(''):'<tr><td colspan=\"4\">登録されている従業員はいません</td></tr>';const periodOptions=",
   )
   .replaceAll("esc(item.category)", "esc(categoryLabel(item.category))")
+  .replace(
+    "function renderProposals(items){const candidates=items.map",
+    "function renderProposals(items){const candidates=items.filter(item=>!isUnclearCategory(item.category)).map",
+  )
   .replace(
     /q\('#status'\)\.textContent='([^']+)'}finally/,
     "q('#status').textContent='$1';throw error}finally",
