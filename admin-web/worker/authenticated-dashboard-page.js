@@ -9,7 +9,7 @@ const login = `<div id="login" class="admin-login"><form id="loginForm" class="a
 <button type="submit">ログイン</button><p id="loginError" class="admin-login-error"></p>
 </form></div>`;
 
-const loginStyles = `.admin-login{position:fixed;inset:0;display:grid;place-items:center;background:#10131a;z-index:10}.admin-login-card{width:min(420px,92vw);background:#fff;border-radius:16px;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.35)}.admin-login-card h2{margin:8px 0}.admin-login-card p{color:#697083}.admin-login-card input{display:block;width:100%;padding:11px;margin:8px 0;border:1px solid #dfe2e8;border-radius:7px}.admin-login-card button{width:100%;margin-top:4px;background:#2459ad;color:#fff;border:0;border-radius:7px;padding:11px;font-weight:700}.admin-login-error{color:#a23!important}.topbar-actions{display:flex;align-items:center;gap:14px}.logout{border:1px solid #dfe2e8;background:#fff;color:#16181d;border-radius:7px;padding:7px 11px;cursor:pointer}.employee-nav{margin-top:28px;border-top:1px solid #303754;padding-top:18px}.employee-nav>small{display:block;color:#757eaa;font-size:10px;letter-spacing:.14em;margin:0 10px 8px}.employee-list{max-height:230px;overflow:auto}.employee-item{padding:8px 10px;border-radius:7px;color:#fff}.employee-item b{display:block;font-size:12px}.employee-item span{display:block;color:#9199ba;font-size:10px}.employee-empty{padding:8px 10px;color:#9199ba;font-size:11px}`;
+const loginStyles = `.admin-login{position:fixed;inset:0;display:grid;place-items:center;background:#10131a;z-index:10}.admin-login-card{width:min(420px,92vw);background:#fff;border-radius:16px;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.35)}.admin-login-card h2{margin:8px 0}.admin-login-card p{color:#697083}.admin-login-card input{display:block;width:100%;padding:11px;margin:8px 0;border:1px solid #dfe2e8;border-radius:7px}.admin-login-card button{width:100%;margin-top:4px;background:#2459ad;color:#fff;border:0;border-radius:7px;padding:11px;font-weight:700}.admin-login-error{color:#a23!important}.topbar-actions{display:flex;align-items:center;gap:14px}.logout{border:1px solid #dfe2e8;background:#fff;color:#16181d;border-radius:7px;padding:7px 11px;cursor:pointer}.employee-page{display:none;padding:31px clamp(18px,4vw,52px) 64px}.employee-page h1{margin-bottom:4px}.employee-page .page-description{color:#697083;margin:0 0 22px}.employee-panel{background:#fff;border:1px solid #dfe2e8;border-radius:14px;padding:25px;box-shadow:0 8px 28px rgba(22,28,53,.04);overflow:auto}.employee-table{width:100%;border-collapse:collapse;min-width:620px}.employee-table th,.employee-table td{text-align:left;padding:13px 12px;border-bottom:1px solid #dfe2e8}.employee-table th{color:#697083;font-size:11px}.employee-table td:first-child{font-weight:700}.employee-status{color:#0f7b59;font-weight:700;font-size:12px}`;
 
 const categoryScript = `
 const categoryLabels={other:'その他',administration:'管理・事務',development:'開発',research:'調査・リサーチ',chat_meeting:'チャット・会議',meeting:'会議',documents:'資料作成',document:'資料作成',email:'メール',input:'データ入力',data_entry:'データ入力',marketing:'マーケティング',sns:'SNS・マーケティング',accounting:'経理',account:'経理'};
@@ -17,15 +17,25 @@ function categoryLabel(value){return categoryLabels[String(value||'').toLowerCas
 
 const authScript = `
 function clearAuth(){for(const key of ['scr-company-code','scr-admin-email','scr-admin-password'])sessionStorage.removeItem(key);auth={code:'',email:'',password:''}}
+function showPage(name){const employees=name==='employees';q('#main').style.display=employees?'none':'block';q('#employeePage').style.display=employees?'block':'none';q('#overviewMenu').classList.toggle('active',!employees);q('#employeeManagement').classList.toggle('active',employees)}
 q('#loginForm').onsubmit=async event=>{event.preventDefault();q('#loginError').textContent='';auth={code:q('#companyCode').value.trim(),email:q('#adminEmail').value.trim(),password:q('#adminPassword').value};try{await load();sessionStorage.setItem('scr-company-code',auth.code);sessionStorage.setItem('scr-admin-email',auth.email);sessionStorage.setItem('scr-admin-password',auth.password);q('#login').style.display='none'}catch{clearAuth();q('#loginError').textContent='企業コード、管理者ID、またはパスワードが正しくありません'}};
-q('#logout').onclick=()=>{clearAuth();q('#loginForm').reset();q('#loginError').textContent='';q('#error').style.display='none';q('#status').textContent='● ログインが必要です';q('#login').style.display='grid'};
+q('#overviewMenu').onclick=()=>showPage('overview');q('#employeeManagement').onclick=()=>showPage('employees');
+q('#logout').onclick=()=>{clearAuth();showPage('overview');q('#loginForm').reset();q('#loginError').textContent='';q('#error').style.display='none';q('#status').textContent='● ログインが必要です';q('#login').style.display='grid'};
 if(auth.code&&auth.email&&auth.password)load().then(()=>q('#login').style.display='none').catch(()=>{clearAuth();q('#loginError').textContent='保存済みの認証情報が無効です。再度ログインしてください'});`;
 
 export const authenticatedDashboardPage = dashboardPage
   .replace("</style></head><body>", `${loginStyles}</style></head><body>${login}`)
   .replace(
-    '</nav><div class="privacy">',
-    '</nav><section class="employee-nav"><small>従業員</small><div class="employee-list" id="sidebarEmployees"><div class="employee-empty">読み込み中</div></div></section><div class="privacy">',
+    '<button class="active">',
+    '<button class="active" id="overviewMenu">',
+  )
+  .replace(
+    '<small>GOVERNANCE</small>',
+    '<button id="employeeManagement">従業員管理</button><small>GOVERNANCE</small>',
+  )
+  .replace(
+    '</main></div></div><script>',
+    '</main><main class="employee-page" id="employeePage"><div class="eyebrow">Employee management</div><h1>従業員管理</h1><p class="page-description">登録されている従業員を参照できます。</p><section class="employee-panel"><table class="employee-table"><thead><tr><th>従業員</th><th>部署</th><th>最終同期</th><th>状態</th></tr></thead><tbody id="employeeRows"><tr><td colspan="4">読み込み中</td></tr></tbody></table></section></main></div></div><script>',
   )
   .replace(
     /<span class="status" id="status">[^<]*<\/span>/,
@@ -41,7 +51,7 @@ export const authenticatedDashboardPage = dashboardPage
   )
   .replace(
     "source=await response.json();const periodOptions=",
-    "source=await response.json();if(source.company?.name)q('.company').textContent=source.company.name;q('#sidebarEmployees').innerHTML=source.employees?.length?source.employees.map(item=>'<div class=\"employee-item\"><b>'+esc(item.display_name)+'</b><span>'+esc(item.department)+'</span></div>').join(''):'<div class=\"employee-empty\">登録なし</div>';const periodOptions=",
+    "source=await response.json();if(source.company?.name)q('.company').textContent=source.company.name;q('#employeeRows').innerHTML=source.employees?.length?source.employees.map(item=>'<tr><td>'+esc(item.display_name)+'</td><td>'+esc(item.department)+'</td><td>'+fmtDate(item.last_seen_at)+'</td><td><span class=\"employee-status\">登録済み</span></td></tr>').join(''):'<tr><td colspan=\"4\">登録されている従業員はいません</td></tr>';const periodOptions=",
   )
   .replaceAll("esc(item.category)", "esc(categoryLabel(item.category))")
   .replace(

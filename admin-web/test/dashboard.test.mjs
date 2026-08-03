@@ -19,12 +19,16 @@ test("invalid credentials stay on login and logout clears the session", () => {
   assert.match(authenticatedDashboardPage, /q\('#login'\)\.style\.display='grid'/);
 });
 
-test("dashboard localizes categories and lists employees in the sidebar", () => {
+test("dashboard localizes categories and provides read-only employee management", () => {
   assert.match(authenticatedDashboardPage, /other:'その他'/);
   assert.match(authenticatedDashboardPage, /administration:'管理・事務'/);
   assert.match(authenticatedDashboardPage, /development:'開発'/);
-  assert.match(authenticatedDashboardPage, /id="sidebarEmployees"/);
+  assert.match(authenticatedDashboardPage, /id="employeeManagement"/);
+  assert.match(authenticatedDashboardPage, /id="employeePage"/);
+  assert.match(authenticatedDashboardPage, /id="employeeRows"/);
   assert.match(authenticatedDashboardPage, /source\.employees\?\.length/);
+  assert.match(authenticatedDashboardPage, /登録されている従業員を参照できます/);
+  assert.doesNotMatch(authenticatedDashboardPage, /新規作成|従業員を編集|従業員を削除/);
   assert.doesNotMatch(authenticatedDashboardPage, /<h3>'\+esc\(item\.category\)/);
 });
 
