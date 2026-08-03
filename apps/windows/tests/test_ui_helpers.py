@@ -1,3 +1,4 @@
+import inspect
 import json
 import time
 from pathlib import Path
@@ -91,6 +92,14 @@ def test_onboarding_notice_discloses_collection_and_rights() -> None:
         "停止状態は再起動後も維持",
     ):
         assert required in notice
+
+
+def test_settings_dialog_keeps_all_fields_and_actions_scrollable() -> None:
+    source = inspect.getsource(WindowsTrayUI._settings_dialog)
+
+    assert 'tk.Scrollbar(body, orient="vertical", command=canvas.yview)' in source
+    assert 'form = tk.Frame(scrollable)' in source
+    assert 'canvas.bind_all(' in source
 
 
 def test_tray_becomes_visible_before_capture_service_starts(tmp_path: Path) -> None:

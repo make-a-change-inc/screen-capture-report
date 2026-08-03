@@ -611,8 +611,34 @@ class WindowsTrayUI:
         root = tk.Tk()
         root.title("Screen Capture Report - 設定")
         root.geometry("680x740")
-        form = tk.Frame(root)
-        form.pack(fill="both", expand=True, padx=30, pady=20)
+        root.minsize(560, 480)
+        root.resizable(True, True)
+
+        body = tk.Frame(root)
+        body.pack(fill="both", expand=True, padx=8, pady=8)
+        canvas = tk.Canvas(body, highlightthickness=0)
+        scrollbar = tk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        scrollable = tk.Frame(canvas)
+        scrollable_window = canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def update_scroll_region(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def resize_scrollable(event) -> None:
+            canvas.itemconfigure(scrollable_window, width=event.width)
+
+        scrollable.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", resize_scrollable)
+        canvas.bind_all(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"),
+        )
+
+        form = tk.Frame(scrollable)
+        form.pack(fill="x", expand=True, padx=22, pady=12)
         values: dict[str, tk.StringVar] = {}
 
         fields = [
