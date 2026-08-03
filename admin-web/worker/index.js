@@ -116,6 +116,13 @@ async function companyByCode(env, companyCode) {
 async function bootstrapCompany(env, companyCode, migrateLegacy = true, requestedName = "") {
   let company = await companyByCode(env, companyCode);
   if (company) {
+    const companyName = String(requestedName || "").trim().slice(0, 128);
+    if (!migrateLegacy && companyName && companyName !== company.name) {
+      await env.DB.prepare("UPDATE companies SET name=? WHERE id=?").bind(
+        companyName, company.id,
+      ).run();
+      company = { ...company, name: companyName };
+    }
     const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM companies").first();
     if (migrateLegacy && Number(count?.count || 0) === 1) {
       await env.DB.batch([

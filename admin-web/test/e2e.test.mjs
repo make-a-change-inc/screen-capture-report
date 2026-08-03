@@ -55,6 +55,14 @@ test("management report completes the admin API round trip", async (t) => {
   const { deviceToken } = await registration.json();
   assert.ok(deviceToken.length >= 40);
 
+  const renamed = await fetch("/api/v1/device/register", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ companyCode, companyName: "株式会社ライトアップ",
+      employeeId: "employee-rename", department: "QA", deviceName: "RENAME-PC" }),
+  });
+  assert.equal(renamed.status, 201);
+
   const oversizedCompanyCode = await fetch("/api/v1/device/register", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -120,14 +128,15 @@ test("management report completes the admin API round trip", async (t) => {
   });
   assert.equal(summary.status, 200);
   const dashboard = await summary.json();
-  assert.equal(dashboard.employees.length, 1);
+  assert.equal(dashboard.company.name, "株式会社ライトアップ");
+  assert.equal(dashboard.employees.length, 2);
   assert.equal(dashboard.reports.length, 1);
   assert.equal(dashboard.reports[0].display_name, "山田 花子");
 
   const live = await fetch("/api/dashboard/summary", { headers: adminHeaders });
   assert.equal(live.status, 200);
   const liveDashboard = await live.json();
-  assert.equal(liveDashboard.employeeCount, 1);
+  assert.equal(liveDashboard.employeeCount, 2);
   assert.equal(liveDashboard.reportCount, 1);
   assert.deepEqual(liveDashboard.rows.map((item) => item.minutes), [720, 480]);
 
