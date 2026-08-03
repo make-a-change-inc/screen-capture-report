@@ -466,9 +466,13 @@ function normalizeCategories(value) {
 async function dashboardSummary(env, company) {
   const [employees, devices, reports] = await Promise.all([
     env.DB.prepare(
-      `SELECT COUNT(*) AS count FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
-       WHERE ce.company_id=? AND e.status='active'`,
-    ).bind(company.id).first(),
+      `SELECT e.id, e.display_name, e.department, MAX(d.last_seen_at) AS last_seen_at
+       FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
+       LEFT JOIN company_devices cd ON cd.company_id=ce.company_id
+       LEFT JOIN devices d ON d.id=cd.device_id AND d.employee_id=e.id AND d.status='active'
+       WHERE ce.company_id=? AND e.status='active'
+       GROUP BY e.id, e.display_name, e.department ORDER BY e.display_name`,
+    ).bind(company.id).all(),
     env.DB.prepare(
       `SELECT COUNT(*) AS count, MAX(d.last_seen_at) AS last_seen_at FROM company_devices cd
        JOIN devices d ON d.id=cd.device_id WHERE cd.company_id=? AND d.status='active'`,
@@ -504,7 +508,8 @@ async function dashboardSummary(env, company) {
     company: { id: company.id, name: company.name },
     refreshedAt: new Date().toISOString(),
     latestReceivedAt: reports.results[0]?.received_at || null,
-    employeeCount: Number(employees?.count || 0), deviceCount: Number(devices?.count || 0),
+    employeeCount: employees.results.length, employees: employees.results,
+    deviceCount: Number(devices?.count || 0),
     reportCount: reports.results.length, latestDeviceSyncAt: devices?.last_seen_at || null,
     rows,
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,

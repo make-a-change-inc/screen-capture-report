@@ -19,6 +19,15 @@ test("invalid credentials stay on login and logout clears the session", () => {
   assert.match(authenticatedDashboardPage, /q\('#login'\)\.style\.display='grid'/);
 });
 
+test("dashboard localizes categories and lists employees in the sidebar", () => {
+  assert.match(authenticatedDashboardPage, /other:'その他'/);
+  assert.match(authenticatedDashboardPage, /administration:'管理・事務'/);
+  assert.match(authenticatedDashboardPage, /development:'開発'/);
+  assert.match(authenticatedDashboardPage, /id="sidebarEmployees"/);
+  assert.match(authenticatedDashboardPage, /source\.employees\?\.length/);
+  assert.doesNotMatch(authenticatedDashboardPage, /<h3>'\+esc\(item\.category\)/);
+});
+
 test("dashboard loads live D1 data instead of embedded mock totals", () => {
   assert.match(dashboardPage, /fetch\('\/api\/dashboard\/summary'/);
   assert.doesNotMatch(dashboardPage, /Cloudflare D1/);
