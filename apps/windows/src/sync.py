@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -18,6 +19,13 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class UploadResult:
     success: bool
+    error_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrationResult:
+    success: bool
+    device_token: str = ""
     error_code: str | None = None
 
 
@@ -64,6 +72,37 @@ class ManagementReportClient:
             logger.error("Management report upload failed: %s", type(exc).__name__)
             return UploadResult(False, type(exc).__name__)
 
+    def register(
+        self, api_url: str, company_code: str, employee_id: str, department: str,
+        device_name: str, *, sites_bypass_token: str = "",
+    ) -> RegistrationResult:
+        endpoint = api_url.rstrip("/") + "/api/v1/device/register"
+        parsed = urlparse(endpoint)
+        if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"}:
+            return RegistrationResult(False, error_code="insecure_admin_api_url")
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "ScreenCaptureReport/0.4",
+        }
+        if sites_bypass_token:
+            headers["OAI-Sites-Authorization"] = f"Bearer {sites_bypass_token}"
+        request = urllib.request.Request(endpoint, data=json.dumps({
+            "companyCode": company_code, "employeeId": employee_id,
+            "department": department, "deviceName": device_name,
+        }, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                token = str(payload.get("deviceToken") or "")
+                return RegistrationResult(bool(token), token, None if token else "invalid_response")
+        except urllib.error.HTTPError as exc:
+            return RegistrationResult(False, error_code=f"http_{exc.code}")
+        except urllib.error.URLError:
+            return RegistrationResult(False, error_code="network_error")
+        except Exception as exc:
+            logger.error("Device registration failed: %s", type(exc).__name__)
+            return RegistrationResult(False, error_code=type(exc).__name__)
+
 
 class ManagementReportSync:
     """Uploads finalized management reports only; never screenshots or employee dailies."""
@@ -80,16 +119,46 @@ class ManagementReportSync:
         self.settings_provider = settings_provider
         self.secrets = secrets
         self.client = client or ManagementReportClient()
+        self._registration_retry_count = 0
+        self._registration_next_at: datetime | None = None
+
+    def _device_token(self, settings: Settings) -> str:
+        token = self.secrets.get("admin_upload_token") or ""
+        if token:
+            return token
+        now = datetime.now().astimezone()
+        if self._registration_next_at and now < self._registration_next_at:
+            return ""
+        company_code = self.secrets.get("company_code") or ""
+        employee_id = self.secrets.get("employee_id") or ""
+        department = self.secrets.get("department") or ""
+        if not all((company_code, employee_id, department)):
+            return ""
+        result = self.client.register(
+            settings.admin_api_url, company_code, employee_id, department,
+            platform.node() or "Windows PC",
+            sites_bypass_token=self.secrets.get("admin_sites_bypass_token") or "",
+        )
+        if result.success:
+            self.secrets.set("admin_upload_token", result.device_token)
+            self._registration_retry_count = 0
+            self._registration_next_at = None
+            return result.device_token
+        delay = min(3600, 60 * (2 ** self._registration_retry_count))
+        self._registration_retry_count += 1
+        self._registration_next_at = now + timedelta(seconds=delay)
+        return ""
 
     def sync_pending(self) -> int:
         settings: Settings = self.settings_provider()
-        token = self.secrets.get("admin_upload_token") or ""
         if (
             not settings.server_sync_enabled
             or not settings.has_server_sync_consent
             or not settings.admin_api_url
-            or not token
         ):
+            return 0
+        token = self._device_token(settings)
+        if not token:
             return 0
 
         reports = {
@@ -148,8 +217,7 @@ class ManagementReportSync:
             )
             state = self.database.report_sync_state(report_id) or {"retry_count": 0}
             if result.error_code == "http_401":
-                self.database.mark_report_sync_auth_required(report_id)
-                continue
+                self.secrets.delete("admin_upload_token")
             delay = min(3600, 60 * (2 ** int(state["retry_count"])))
             self.database.mark_report_sync(
                 report_id,

@@ -168,6 +168,8 @@ class WindowsTrayUI:
             ",".join(map(str, settings.work_weekdays)),
         )
 
+        add_row("企業コード（必須）", "company_code", self.secrets.get("company_code") or "", True)
+
         consent = tk.BooleanVar(value=False)
         tk.Checkbutton(
             scrollable,
@@ -185,7 +187,7 @@ class WindowsTrayUI:
                 return
             required_identity = {
                 key: values[key].get().strip()
-                for key in ("employee_id", "department", "privacy_contact")
+                for key in ("company_code", "employee_id", "department", "privacy_contact")
             }
             if not all(required_identity.values()):
                 messagebox.showerror("入力エラー", "対象者、部署、連絡先はすべて必須です。")
@@ -201,6 +203,8 @@ class WindowsTrayUI:
                 if value.strip()
             ]
             settings.grant_consent()
+            settings.grant_server_sync_consent()
+            settings.server_sync_enabled = True
             try:
                 self.secrets.set("gemini_api_key", api_key)
                 for key, value in required_identity.items():
@@ -612,6 +616,7 @@ class WindowsTrayUI:
         values: dict[str, tk.StringVar] = {}
 
         fields = [
+            ("企業コード", "company_code", self.secrets.get("company_code") or ""),
             ("従業員識別子", "employee_id", self.secrets.get("employee_id") or ""),
             ("部署", "department", self.secrets.get("department") or ""),
             (
@@ -689,9 +694,10 @@ class WindowsTrayUI:
 
         def save() -> None:
             try:
+                previous_company_code = self.secrets.get("company_code") or ""
                 if not all(
                     values[key].get().strip()
-                    for key in ("employee_id", "department", "privacy_contact")
+                    for key in ("company_code", "employee_id", "department", "privacy_contact")
                 ):
                     raise ValueError("対象者、部署、連絡先は必須です")
                 settings.work_start = values["work_start"].get().strip()
@@ -731,7 +737,10 @@ class WindowsTrayUI:
                 ]
                 self.settings_store.save(settings)
                 self.autostart.set_enabled(autostart.get())
+                if previous_company_code != values["company_code"].get().strip():
+                    self.secrets.delete("admin_upload_token")
                 for key in (
+                    "company_code",
                     "employee_id",
                     "department",
                     "privacy_contact",

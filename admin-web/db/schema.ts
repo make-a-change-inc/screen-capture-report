@@ -67,4 +67,32 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE INDEX IF NOT EXISTS idx_reports_period ON reports(period_start DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_employee ON reports(employee_id, period_start DESC);
+
+CREATE TABLE IF NOT EXISTS companies (
+  id TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS company_employees (
+  company_id TEXT NOT NULL REFERENCES companies(id),
+  employee_id TEXT NOT NULL UNIQUE REFERENCES employees(id),
+  external_employee_id TEXT NOT NULL,
+  PRIMARY KEY(company_id, external_employee_id)
+);
+
+CREATE TABLE IF NOT EXISTS company_devices (
+  company_id TEXT NOT NULL REFERENCES companies(id),
+  device_id TEXT NOT NULL UNIQUE REFERENCES devices(id)
+);
+
+CREATE TABLE IF NOT EXISTS company_reports (
+  company_id TEXT NOT NULL REFERENCES companies(id),
+  report_id TEXT NOT NULL UNIQUE REFERENCES reports(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_devices_company ON company_devices(company_id);
+CREATE INDEX IF NOT EXISTS idx_company_reports_company ON company_reports(company_id);
 `;

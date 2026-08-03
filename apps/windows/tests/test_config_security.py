@@ -102,6 +102,7 @@ def test_required_onboarding_secret_gate_fails_closed() -> None:
     secrets = MemorySecretStore(
         {
             "gemini_api_key": "synthetic",
+            "company_code": "company-code-001",
             "employee_id": "employee-1",
             "department": "QA",
         }

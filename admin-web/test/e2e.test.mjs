@@ -9,6 +9,9 @@ const digest = (value) => createHash("sha256").update(value).digest("hex");
 test("management report completes the admin API round trip", async (t) => {
   const adminEmail = "admin@example.test";
   const adminPassword = "local-admin-password";
+  const companyCode = "writeup";
+  const adminHeaders = { "x-company-code": companyCode, "x-admin-email": adminEmail,
+    "x-admin-password": adminPassword };
   const mf = new Miniflare({
     compatibilityDate: "2026-07-20",
     modules: true,
@@ -31,18 +34,17 @@ test("management report completes the admin API round trip", async (t) => {
   const adminPage = await fetch("/admin");
   assert.equal(adminPage.status, 200);
   const adminHtml = await adminPage.text();
-  assert.match(adminHtml, /api\/admin\/devices/);
-  assert.match(adminHtml, /\.scr-provision\.json/);
-  assert.match(adminHtml, /admin_api_url:location\.origin/);
+  assert.match(adminHtml, /企業コード/);
+  assert.doesNotMatch(adminHtml, /\.scr-provision\.json/);
 
   const wrongEmail = await fetch("/api/admin/summary", {
-    headers: { "x-admin-email": "other@example.test", "x-admin-password": adminPassword },
+    headers: { ...adminHeaders, "x-admin-email": "other@example.test" },
   });
   assert.equal(wrongEmail.status, 401);
 
-  const registration = await fetch("/api/admin/devices", {
+  const registration = await fetch("/api/v1/device/register", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-admin-email": adminEmail, "x-admin-password": adminPassword },
+    headers: { "content-type": "application/json", "x-company-code": companyCode },
     body: JSON.stringify({
       displayName: "山田 花子",
       department: "開発部",
@@ -52,6 +54,14 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(registration.status, 201);
   const { deviceToken } = await registration.json();
   assert.ok(deviceToken.length >= 40);
+
+  const oversizedCompanyCode = await fetch("/api/v1/device/register", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ companyCode: "x".repeat(101), employeeId: "employee-x",
+      department: "QA", deviceName: "TEST-PC" }),
+  });
+  assert.equal(oversizedCompanyCode.status, 401);
 
   const report = {
     schema_version: 1,
@@ -106,7 +116,7 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(unfinalized.status, 422);
 
   const summary = await fetch("/api/admin/summary", {
-    headers: { "x-admin-email": adminEmail, "x-admin-password": adminPassword },
+    headers: adminHeaders,
   });
   assert.equal(summary.status, 200);
   const dashboard = await summary.json();
@@ -114,7 +124,7 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(dashboard.reports.length, 1);
   assert.equal(dashboard.reports[0].display_name, "山田 花子");
 
-  const live = await fetch("/api/dashboard/summary");
+  const live = await fetch("/api/dashboard/summary", { headers: adminHeaders });
   assert.equal(live.status, 200);
   const liveDashboard = await live.json();
   assert.equal(liveDashboard.employeeCount, 1);
@@ -122,10 +132,19 @@ test("management report completes the admin API round trip", async (t) => {
   assert.deepEqual(liveDashboard.rows.map((item) => item.minutes), [720, 480]);
 
   const content = await fetch(`/api/admin/reports/${report.report_id}/content`, {
-    headers: { "x-admin-email": adminEmail, "x-admin-password": adminPassword },
+    headers: adminHeaders,
   });
   assert.equal(content.status, 200);
   const decrypted = await content.json();
   assert.equal(decrypted.html, report.report_html);
   assert.equal(decrypted.sha256, digest(report.report_html));
+
+  const otherHeaders = { ...adminHeaders, "x-company-code": "company-code-beta" };
+  const otherBootstrap = await fetch("/api/admin/summary", { headers: otherHeaders });
+  assert.equal(otherBootstrap.status, 200);
+  assert.equal((await otherBootstrap.json()).reports.length, 0);
+  const crossTenantContent = await fetch(`/api/admin/reports/${report.report_id}/content`, {
+    headers: otherHeaders,
+  });
+  assert.equal(crossTenantContent.status, 404);
 });

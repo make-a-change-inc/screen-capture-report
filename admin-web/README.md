@@ -26,7 +26,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - `BOOTSTRAP_ADMIN_HASH`: 移行用の旧名（`ADMIN_PASSWORD_HASH`未設定時のみ使用）
 - `REPORT_ENCRYPTION_KEY_V1`: 32-byte AES鍵のbase64
 
-管理画面と管理APIは固定メールアドレスとパスワードを検証します。
+管理画面と管理APIは企業コード、固定メールアドレス、パスワードを検証します。認証後の従業員、端末、週報、復号本文は企業コードに対応するテナントだけに制限されます。企業コードは平文保存せずSHA-256ダイジェストで照合します。
 端末APIは、D1にSHA-256だけ保存した端末Bearer tokenを必要とします。
 
 サーバーが受け付けるのは確定済み`weekly / management`レポートだけです。本人日報と画像を受け取るAPIはありません。

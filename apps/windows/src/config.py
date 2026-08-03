@@ -19,7 +19,9 @@ from src.constants import (
     SERVER_SYNC_CONSENT_VERSION,
 )
 
-REQUIRED_ONBOARDING_SECRETS = ("gemini_api_key", "employee_id", "department", "privacy_contact")
+REQUIRED_ONBOARDING_SECRETS = (
+    "gemini_api_key", "company_code", "employee_id", "department", "privacy_contact"
+)
 STORED_SECRET_KEYS = (
     "gemini_api_key",
     "smtp_password",
@@ -27,6 +29,7 @@ STORED_SECRET_KEYS = (
     "email_from",
     "employee_email",
     "management_email",
+    "company_code",
     "employee_id",
     "department",
     "privacy_contact",
@@ -83,7 +86,7 @@ class Settings:
     consented_at: str = ""
     token_input_jpy_per_million: float = 0.0
     token_output_jpy_per_million: float = 0.0
-    admin_api_url: str = ""
+    admin_api_url: str = "https://screen-capture-report-admin.m-okamura-8e7.workers.dev"
     server_sync_enabled: bool = False
     server_sync_consent_version: str = ""
     server_sync_consented_at: str = ""
