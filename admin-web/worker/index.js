@@ -83,6 +83,55 @@ async function decryptReport(env, cipher, nonce) {
   return dec.decode(plain);
 }
 
+const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const base32Encode = (bytes) => {
+  let bits = "";
+  for (const byte of bytes) bits += byte.toString(2).padStart(8, "0");
+  return bits.match(/.{1,5}/g).map((chunk) =>
+    base32Alphabet[Number.parseInt(chunk.padEnd(5, "0"), 2)]).join("");
+};
+const base32Decode = (value) => {
+  const bits = [...String(value).toUpperCase().replace(/=|\s/g, "")]
+    .map((character) => base32Alphabet.indexOf(character).toString(2).padStart(5, "0")).join("");
+  return Uint8Array.from(bits.match(/.{8}/g) || [], (chunk) => Number.parseInt(chunk, 2));
+};
+
+async function encryptSecret(env, value) {
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, await reportKey(env), enc.encode(value));
+  return { cipher, nonce };
+}
+
+async function decryptSecret(env, cipher, nonce) {
+  const value = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(nonce) },
+    await reportKey(env), new Uint8Array(cipher));
+  return dec.decode(value);
+}
+
+async function totp(secret, timestamp = Date.now()) {
+  const counter = Math.floor(timestamp / 30000);
+  const message = new Uint8Array(8);
+  new DataView(message.buffer).setBigUint64(0, BigInt(counter));
+  const key = await crypto.subtle.importKey("raw", base32Decode(secret),
+    { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, message));
+  const offset = digest[digest.length - 1] & 15;
+  const value = ((digest[offset] & 127) << 24) | (digest[offset + 1] << 16)
+    | (digest[offset + 2] << 8) | digest[offset + 3];
+  return String(value % 1000000).padStart(6, "0");
+}
+
+async function validTotp(secret, code) {
+  if (!/^\d{6}$/.test(code)) return false;
+  for (const offset of [-30000, 0, 30000]) if (await totp(secret, Date.now() + offset) === code) return true;
+  return false;
+}
+
+async function verifyTotp(env, user, code) {
+  if (!user.mfa_secret_cipher || !user.mfa_secret_nonce) return false;
+  return validTotp(await decryptSecret(env, user.mfa_secret_cipher, user.mfa_secret_nonce), code);
+}
+
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL)`,
@@ -118,6 +167,14 @@ const schemaStatements = [
     email TEXT NOT NULL, csrf_token TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS admin_login_attempts (attempt_key TEXT PRIMARY KEY, attempt_count INTEGER NOT NULL,
     window_started_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS admin_users (company_id TEXT NOT NULL, email TEXT NOT NULL,
+    password_hash TEXT NOT NULL, role TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    mfa_secret_cipher BLOB, mfa_secret_nonce BLOB, mfa_enabled INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY(company_id, email))`,
+  `CREATE TABLE IF NOT EXISTS admin_mfa_enrollments (company_id TEXT NOT NULL, email TEXT NOT NULL,
+    secret_cipher BLOB NOT NULL, secret_nonce BLOB NOT NULL, expires_at TEXT NOT NULL,
+    PRIMARY KEY(company_id, email))`,
   `CREATE TABLE IF NOT EXISTS company_settings (company_id TEXT PRIMARY KEY, timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo',
     week_start INTEGER NOT NULL DEFAULT 1, report_retention_days INTEGER NOT NULL DEFAULT 90,
     audit_retention_days INTEGER NOT NULL DEFAULT 365, updated_at TEXT NOT NULL)`,
@@ -242,11 +299,14 @@ async function requireAdmin(request, env) {
   const token = cookieValue(request, "scr_admin_session");
   if (!token) return null;
   const session = await env.DB.prepare(
-    `SELECT s.company_id, s.email, s.csrf_token, s.expires_at, c.name
+    `SELECT s.company_id, s.email, s.csrf_token, s.expires_at, c.name,
+     COALESCE(u.role,'owner') AS role, COALESCE(u.status,'active') AS user_status
      FROM admin_sessions s JOIN companies c ON c.id=s.company_id
+     LEFT JOIN admin_users u ON u.company_id=s.company_id AND u.email=s.email
      WHERE s.token_hash=? AND s.expires_at>? AND c.status='active'`,
   ).bind(await sha256(token), new Date().toISOString()).first();
-  return session ? { id: session.company_id, name: session.name, email: session.email,
+  return session && session.user_status === "active" ? { id: session.company_id, name: session.name,
+    email: session.email, role: session.role,
     csrfToken: session.csrf_token, sessionToken: token } : null;
 }
 
@@ -265,7 +325,21 @@ async function login(request, env) {
   const windowActive = attempt && now.getTime() - Date.parse(attempt.window_started_at) < 15 * 60 * 1000;
   if (windowActive && Number(attempt.attempt_count) >= 5) return json({ error: "login_rate_limited" }, 429);
   const company = await companyByCode(env, companyCode);
-  if (!company || email !== expectedEmail || !(await timingSafeMatch(password, expectedPasswordHash))) {
+  let user = company ? await env.DB.prepare(
+    "SELECT * FROM admin_users WHERE company_id=? AND email=?",
+  ).bind(company.id, email).first() : null;
+  if (company && !user && email === expectedEmail && await timingSafeMatch(password, expectedPasswordHash)) {
+    const createdAt = now.toISOString();
+    await env.DB.prepare(`INSERT INTO admin_users VALUES (?, ?, ?, 'owner', 'active',
+      NULL, NULL, 0, ?, ?, ?)`)
+      .bind(company.id, email, expectedPasswordHash, email, createdAt, createdAt).run();
+    user = await env.DB.prepare("SELECT * FROM admin_users WHERE company_id=? AND email=?")
+      .bind(company.id, email).first();
+  }
+  const credentialsValid = company && user?.status === "active"
+    && await timingSafeMatch(password, user.password_hash);
+  const mfaValid = !user?.mfa_enabled || await verifyTotp(env, user, String(body.otp || ""));
+  if (!credentialsValid || !mfaValid) {
     await env.DB.prepare(
       `INSERT INTO admin_login_attempts VALUES (?, 1, ?)
        ON CONFLICT(attempt_key) DO UPDATE SET
@@ -273,7 +347,7 @@ async function login(request, env) {
        window_started_at=CASE WHEN window_started_at<? THEN excluded.window_started_at ELSE window_started_at END`,
     ).bind(attemptKey, now.toISOString(), new Date(now.getTime() - 15 * 60 * 1000).toISOString(),
       new Date(now.getTime() - 15 * 60 * 1000).toISOString()).run();
-    return json({ error: "invalid_credentials" }, 401);
+    return json({ error: credentialsValid && user?.mfa_enabled ? "mfa_required" : "invalid_credentials" }, 401);
   }
   const token = randomToken();
   const csrfToken = randomToken(24);
@@ -286,7 +360,8 @@ async function login(request, env) {
     ).bind(await sha256(token), company.id, email, csrfToken, now.toISOString(), expiresAt),
   ]);
   await audit(env, "admin", email, "session.login", "company", company.id);
-  return json({ company: { id: company.id, name: company.name }, email, csrfToken, expiresAt }, 200,
+  return json({ company: { id: company.id, name: company.name }, email, role: user.role,
+    csrfToken, expiresAt }, 200,
     { "set-cookie": sessionCookie(token) });
 }
 
@@ -703,7 +778,7 @@ async function dashboardSummary(env, company) {
   const [employees, deviceSummary, deviceRows, reports, reportVersions, auditRows, settings,
     opportunityStates, classificationRules, privacyRequests, consentEvents, deviceHeartbeats,
     collectionPolicy, classificationCorrections, legalHolds, privacyTargets,
-    deletionReceipts] = await Promise.all([
+    deletionReceipts, adminUsers, adminSessionCounts] = await Promise.all([
     env.DB.prepare(
       `SELECT e.id, e.display_name, e.department, MAX(d.last_seen_at) AS last_seen_at
        FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
@@ -769,6 +844,11 @@ async function dashboardSummary(env, company) {
     env.DB.prepare("SELECT * FROM privacy_request_targets WHERE company_id=?").bind(company.id).all(),
     env.DB.prepare("SELECT * FROM deletion_receipts WHERE company_id=? ORDER BY executed_at DESC LIMIT 200")
       .bind(company.id).all(),
+    env.DB.prepare(`SELECT email,role,status,mfa_enabled,created_at,updated_at FROM admin_users
+      WHERE company_id=? ORDER BY email`).bind(company.id).all(),
+    env.DB.prepare(`SELECT email,COUNT(*) AS session_count,MAX(created_at) AS latest_session_at,
+      MAX(expires_at) AS latest_expiry FROM admin_sessions WHERE company_id=? GROUP BY email`)
+      .bind(company.id).all(),
   ]);
   const rows = [];
   const correctedCategories = new Map();
@@ -816,15 +896,15 @@ async function dashboardSummary(env, company) {
         (item) => item.report_id === report.id && item.status === "applied").length,
       versions: reportVersions.results.filter((version) => version.report_id === report.id),
     })),
-    auditEvents: auditRows.results.map((item) => ({ ...item,
+    auditEvents: company.role === "manager" ? [] : auditRows.results.map((item) => ({ ...item,
       metadata: JSON.parse(item.metadata_json || "{}"), metadata_json: undefined })),
     settings: settings || { timezone: "Asia/Tokyo", week_start: 1,
       report_retention_days: 90, audit_retention_days: 365 },
-    admin: { email: company.email },
+    admin: { email: company.email, role: company.role },
     opportunityStates: opportunityStates.results,
     classificationRules: classificationRules.results,
-    privacyRequests: privacyRequests.results,
-    consentEvents: consentEvents.results,
+    privacyRequests: company.role === "manager" ? [] : privacyRequests.results,
+    consentEvents: company.role === "manager" ? [] : consentEvents.results,
     deviceHeartbeats: deviceHeartbeats.results.map((item) => ({ ...item,
       pause_reasons: JSON.parse(item.pause_reasons_json || "{}"), pause_reasons_json: undefined })),
     collectionPolicy: collectionPolicy ? { version: Number(collectionPolicy.version),
@@ -836,9 +916,12 @@ async function dashboardSummary(env, company) {
       { version: 0, collectionEnabled: true, excludedApps: [], excludedUrlPatterns: [],
         excludedTimeRanges: [], purposeText: "", updatedAt: null },
     classificationCorrections: classificationCorrections.results,
-    legalHolds: legalHolds.results,
-    privacyRequestTargets: privacyTargets.results,
-    deletionReceipts: deletionReceipts.results,
+    legalHolds: company.role === "manager" ? [] : legalHolds.results,
+    privacyRequestTargets: company.role === "manager" ? [] : privacyTargets.results,
+    deletionReceipts: company.role === "manager" ? [] : deletionReceipts.results,
+    adminUsers: adminUsers.results.map((user) => ({ ...user,
+      mfa_enabled: Boolean(user.mfa_enabled), ...(adminSessionCounts.results.find(
+        (session) => session.email === user.email) || { session_count: 0 }) })),
     rows,
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
       reportsParsedFromEncryptedContent: fallbackCount,
@@ -1146,6 +1229,102 @@ async function recordConsent(request, env, company) {
   return json({ id, status }, 201);
 }
 
+const canMutate = (company, pathname) => {
+  if (company.role === "owner") return true;
+  if (company.role === "auditor") return false;
+  return /^\/api\/admin\/(reports\/[^/]+\/workflow|opportunities\/state|classification-corrections)$/.test(pathname);
+};
+
+async function createAdminUser(request, env, company) {
+  const body = await request.json();
+  const email = String(body.email || "").trim().toLowerCase();
+  const role = String(body.role || "manager");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !["owner", "manager", "auditor"].includes(role)) {
+    return json({ error: "invalid_admin_user" }, 400);
+  }
+  const exists = await env.DB.prepare("SELECT email FROM admin_users WHERE company_id=? AND email=?")
+    .bind(company.id, email).first();
+  if (exists) return json({ error: "admin_user_exists" }, 409);
+  const temporaryPassword = randomToken(18);
+  const now = new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO admin_users VALUES (?, ?, ?, ?, 'active', NULL, NULL, 0, ?, ?, ?)`)
+    .bind(company.id, email, await sha256(temporaryPassword), role, company.email, now, now).run();
+  await audit(env, "admin", company.email, "admin_user.created", "company", company.id, { email, role });
+  return json({ email, role, temporaryPassword }, 201);
+}
+
+async function updateAdminUser(request, env, company, emailValue) {
+  const email = decodeURIComponent(emailValue).trim().toLowerCase();
+  const body = await request.json();
+  const role = String(body.role || "");
+  const status = String(body.status || "");
+  if (!["owner", "manager", "auditor"].includes(role) || !["active", "suspended"].includes(status)
+    || (email === company.email && status !== "active")) return json({ error: "invalid_admin_user" }, 400);
+  const existing = await env.DB.prepare("SELECT role,status FROM admin_users WHERE company_id=? AND email=?")
+    .bind(company.id, email).first();
+  if (!existing) return json({ error: "not_found" }, 404);
+  if (existing.role === "owner" && (role !== "owner" || status !== "active")) {
+    const owners = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM admin_users WHERE company_id=? AND role='owner' AND status='active'",
+    ).bind(company.id).first();
+    if (Number(owners.count) <= 1) return json({ error: "last_owner_required" }, 409);
+  }
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE admin_users SET role=?,status=?,updated_at=? WHERE company_id=? AND email=?")
+      .bind(role, status, now, company.id, email),
+    ...(status === "suspended" ? [env.DB.prepare("DELETE FROM admin_sessions WHERE company_id=? AND email=?")
+      .bind(company.id, email)] : []),
+  ]);
+  await audit(env, "admin", company.email, "admin_user.updated", "company", company.id,
+    { email, fromRole: existing.role, toRole: role, fromStatus: existing.status, toStatus: status });
+  return json({ ok: true, email, role, status });
+}
+
+async function revokeAdminSessions(env, company, emailValue) {
+  const email = decodeURIComponent(emailValue).trim().toLowerCase();
+  if (!await env.DB.prepare("SELECT email FROM admin_users WHERE company_id=? AND email=?")
+    .bind(company.id, email).first()) return json({ error: "not_found" }, 404);
+  await env.DB.prepare("DELETE FROM admin_sessions WHERE company_id=? AND email=?")
+    .bind(company.id, email).run();
+  await audit(env, "admin", company.email, "admin_user.sessions_revoked", "company", company.id, { email });
+  return json({ ok: true });
+}
+
+async function enrollMfa(env, company) {
+  const secret = base32Encode(crypto.getRandomValues(new Uint8Array(20)));
+  const encrypted = await encryptSecret(env, secret);
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  await env.DB.prepare(`INSERT INTO admin_mfa_enrollments VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(company_id,email) DO UPDATE SET secret_cipher=excluded.secret_cipher,
+    secret_nonce=excluded.secret_nonce,expires_at=excluded.expires_at`)
+    .bind(company.id, company.email, encrypted.cipher, encrypted.nonce, expiresAt).run();
+  const issuer = encodeURIComponent("Work Visibility AI");
+  const account = encodeURIComponent(`${company.name}:${company.email}`);
+  return json({ secret, otpauthUri: `otpauth://totp/${issuer}:${account}?secret=${secret}&issuer=${issuer}`,
+    expiresAt });
+}
+
+async function confirmMfa(request, env, company) {
+  const enrollment = await env.DB.prepare(`SELECT * FROM admin_mfa_enrollments
+    WHERE company_id=? AND email=? AND expires_at>?`).bind(company.id, company.email,
+    new Date().toISOString()).first();
+  if (!enrollment) return json({ error: "mfa_enrollment_expired" }, 409);
+  const secret = await decryptSecret(env, enrollment.secret_cipher, enrollment.secret_nonce);
+  const body = await request.json();
+  if (!await validTotp(secret, String(body.otp || ""))) return json({ error: "invalid_otp" }, 400);
+  const encrypted = await encryptSecret(env, secret), now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE admin_users SET mfa_secret_cipher=?,mfa_secret_nonce=?,mfa_enabled=1,
+      updated_at=? WHERE company_id=? AND email=?`).bind(encrypted.cipher, encrypted.nonce, now,
+      company.id, company.email),
+    env.DB.prepare("DELETE FROM admin_mfa_enrollments WHERE company_id=? AND email=?")
+      .bind(company.id, company.email),
+  ]);
+  await audit(env, "admin", company.email, "mfa.enabled", "company", company.id);
+  return json({ ok: true, mfaEnabled: true });
+}
+
 async function runRetention(env) {
   await ensureSchema(env);
   const statements = [];
@@ -1194,6 +1373,35 @@ async function runRetention(env) {
 async function adminApi(request, env, pathname) {
   const company = await requireAdmin(request, env);
   if (!company) return json({ error: "admin_auth_required" }, 401);
+  const mfaPath = pathname.startsWith("/api/admin/mfa/");
+  if (request.method !== "GET" && !mfaPath && !canMutate(company, pathname)) {
+    return json({ error: "permission_denied" }, 403);
+  }
+  if (company.role === "auditor" && /\/reports\/[^/]+\/(versions\/\d+\/)?content$/.test(pathname)) {
+    return json({ error: "permission_denied" }, 403);
+  }
+  if (request.method === "POST" && pathname === "/api/admin/users") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return createAdminUser(request, env, company);
+  }
+  const adminUserMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if (request.method === "PATCH" && adminUserMatch) {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return updateAdminUser(request, env, company, adminUserMatch[1]);
+  }
+  const revokeSessionsMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)\/revoke-sessions$/);
+  if (request.method === "POST" && revokeSessionsMatch) {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return revokeAdminSessions(env, company, revokeSessionsMatch[1]);
+  }
+  if (request.method === "POST" && pathname === "/api/admin/mfa/enroll") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return enrollMfa(env, company);
+  }
+  if (request.method === "POST" && pathname === "/api/admin/mfa/confirm") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return confirmMfa(request, env, company);
+  }
   if (request.method === "GET" && pathname === "/api/admin/summary") return listSummary(env, company);
   if (request.method === "POST" && pathname === "/api/admin/devices") {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
@@ -1312,7 +1520,7 @@ export default {
         await ensureSchema(env);
         const company = await requireAdmin(request, env);
         return company ? json({ company: { id: company.id, name: company.name }, email: company.email,
-          csrfToken: company.csrfToken }) : json({ error: "admin_auth_required" }, 401);
+          role: company.role, csrfToken: company.csrfToken }) : json({ error: "admin_auth_required" }, 401);
       }
       if (url.pathname.startsWith("/api/admin/")) {
         await ensureSchema(env);

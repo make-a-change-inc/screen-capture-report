@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import test from "node:test";
 
 import { Miniflare } from "miniflare";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");
+const totp = (secret) => {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const bits = [...secret].map((character) => alphabet.indexOf(character).toString(2).padStart(5, "0")).join("");
+  const key = Buffer.from((bits.match(/.{8}/g) || []).map((chunk) => Number.parseInt(chunk, 2)));
+  const message = Buffer.alloc(8);
+  message.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+  const hash = createHmac("sha1", key).update(message).digest();
+  const offset = hash.at(-1) & 15;
+  const value = ((hash[offset] & 127) << 24) | (hash[offset + 1] << 16)
+    | (hash[offset + 2] << 8) | hash[offset + 3];
+  return String(value % 1000000).padStart(6, "0");
+};
 
 test("management report completes the admin API round trip", async (t) => {
   const adminEmail = "admin@example.test";
@@ -335,9 +347,57 @@ test("management report completes the admin API round trip", async (t) => {
       weekStart: 1, reportRetentionDays: 120, auditRetentionDays: 400 }) });
   assert.equal(settings.status, 200);
 
+  const managerCreated = await fetch("/api/admin/users", { method: "POST", headers: {
+    ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({
+      email: "manager@example.test", role: "manager" }) });
+  assert.equal(managerCreated.status, 201);
+  const managerPassword = (await managerCreated.json()).temporaryPassword;
+  const auditorCreated = await fetch("/api/admin/users", { method: "POST", headers: {
+    ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({
+      email: "auditor@example.test", role: "auditor" }) });
+  assert.equal(auditorCreated.status, 201);
+  const auditorPassword = (await auditorCreated.json()).temporaryPassword;
+  const managerLogin = await fetch("/api/auth/login", { method: "POST", headers: {
+    "content-type": "application/json" }, body: JSON.stringify({ companyCode,
+      email: "manager@example.test", password: managerPassword }) });
+  assert.equal(managerLogin.status, 200);
+  const managerSession = await managerLogin.json();
+  const managerHeaders = { cookie: managerLogin.headers.get("set-cookie").split(";")[0],
+    "x-csrf-token": managerSession.csrfToken, "content-type": "application/json" };
+  assert.equal((await fetch(`/api/admin/reports/${report.report_id}/content`, {
+    headers: managerHeaders })).status, 200);
+  assert.equal((await fetch("/api/admin/settings", { method: "PATCH", headers: managerHeaders,
+    body: JSON.stringify({ timezone: "Asia/Tokyo", weekStart: 1,
+      reportRetentionDays: 90, auditRetentionDays: 365 }) })).status, 403);
+  const auditorLogin = await fetch("/api/auth/login", { method: "POST", headers: {
+    "content-type": "application/json" }, body: JSON.stringify({ companyCode,
+      email: "auditor@example.test", password: auditorPassword }) });
+  assert.equal(auditorLogin.status, 200);
+  const auditorSession = await auditorLogin.json();
+  const auditorHeaders = { cookie: auditorLogin.headers.get("set-cookie").split(";")[0],
+    "x-csrf-token": auditorSession.csrfToken, "content-type": "application/json" };
+  assert.equal((await fetch("/api/dashboard/summary", { headers: auditorHeaders })).status, 200);
+  assert.equal((await fetch(`/api/admin/reports/${report.report_id}/content`, {
+    headers: auditorHeaders })).status, 403);
+  assert.equal((await fetch("/api/admin/opportunities/state", { method: "POST", headers: auditorHeaders,
+    body: JSON.stringify({ department: "QA", category: "research", status: "reviewing" }) })).status, 403);
+
+  const enrollment = await fetch("/api/admin/mfa/enroll", { method: "POST", headers: mutationHeaders });
+  assert.equal(enrollment.status, 200);
+  const mfaSecret = (await enrollment.json()).secret;
+  assert.equal((await fetch("/api/admin/mfa/confirm", { method: "POST", headers: {
+    ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({
+      otp: totp(mfaSecret) }) })).status, 200);
+
   const loggedOut = await fetch("/api/auth/logout", { method: "POST", headers: sessionHeaders });
   assert.equal(loggedOut.status, 200);
   assert.equal((await fetch("/api/dashboard/summary", { headers: sessionHeaders })).status, 401);
+  assert.equal((await fetch("/api/auth/login", { method: "POST", headers: {
+    "content-type": "application/json" }, body: JSON.stringify({ companyCode,
+      email: adminEmail, password: adminPassword }) })).status, 401);
+  assert.equal((await fetch("/api/auth/login", { method: "POST", headers: {
+    "content-type": "application/json" }, body: JSON.stringify({ companyCode,
+      email: adminEmail, password: adminPassword, otp: totp(mfaSecret) }) })).status, 200);
 
   const failedStatuses = [];
   for (let attempt = 0; attempt < 6; attempt += 1) {

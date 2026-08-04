@@ -111,6 +111,9 @@ CREATE TABLE IF NOT EXISTS admin_login_attempts (
   window_started_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS admin_users (company_id TEXT NOT NULL REFERENCES companies(id), email TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', mfa_secret_cipher BLOB, mfa_secret_nonce BLOB, mfa_enabled INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(company_id, email));
+CREATE TABLE IF NOT EXISTS admin_mfa_enrollments (company_id TEXT NOT NULL REFERENCES companies(id), email TEXT NOT NULL, secret_cipher BLOB NOT NULL, secret_nonce BLOB NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(company_id, email));
+
 CREATE TABLE IF NOT EXISTS company_settings (
   company_id TEXT PRIMARY KEY REFERENCES companies(id),
   timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo',
