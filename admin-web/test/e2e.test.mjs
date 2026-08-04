@@ -171,6 +171,11 @@ test("management report completes the admin API round trip", async (t) => {
   const sessionCookie = login.headers.get("set-cookie").split(";")[0];
   const sessionHeaders = { cookie: sessionCookie };
   const mutationHeaders = { ...sessionHeaders, "x-csrf-token": loginBody.csrfToken };
+  assert.equal((await fetch(`/api/auth/oidc/start?companyCode=${companyCode}`)).status, 404);
+  assert.equal((await fetch("/api/admin/oidc-config", { method: "PUT", headers: {
+    ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({
+      issuer: "http://localhost:9999", clientId: "test", clientSecret: "secret",
+      allowedDomain: "example.test", defaultRole: "manager", enabled: true }) })).status, 400);
 
   const summary = await fetch("/api/admin/summary", { headers: sessionHeaders });
   assert.equal(summary.status, 200);
@@ -390,6 +395,9 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal((await fetch("/api/admin/settings", { method: "PATCH", headers: managerHeaders,
     body: JSON.stringify({ timezone: "Asia/Tokyo", weekStart: 1,
       reportRetentionDays: 90, auditRetentionDays: 365 }) })).status, 403);
+  assert.equal((await fetch("/api/admin/oidc-config", { method: "PUT", headers: managerHeaders,
+    body: JSON.stringify({ issuer: "https://idp.example.test", clientId: "test",
+      clientSecret: "secret", defaultRole: "manager", enabled: true }) })).status, 403);
   const auditorLogin = await fetch("/api/auth/login", { method: "POST", headers: {
     "content-type": "application/json" }, body: JSON.stringify({ companyCode,
       email: "auditor@example.test", password: auditorPassword }) });
