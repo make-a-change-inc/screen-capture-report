@@ -11,6 +11,7 @@ class RecordingClient:
         self.result = result or UploadResult(True)
         self.payloads: list[dict] = []
         self.registrations: list[dict] = []
+        self.heartbeats: list[dict] = []
 
     def register(
         self, api_url: str, company_code: str, employee_id: str,
@@ -33,6 +34,12 @@ class RecordingClient:
         assert sites_bypass_token == ""
         self.payloads.append(payload)
         return self.result
+
+    def heartbeat(self, api_url: str, token: str, payload: dict, *, sites_bypass_token: str = "") -> UploadResult:
+        assert api_url == "https://management.example.test"
+        assert token == "device-token"
+        self.heartbeats.append(payload)
+        return UploadResult(True)
 
 
 def build_sync(database, settings, client: RecordingClient) -> ManagementReportSync:
@@ -91,6 +98,9 @@ def test_sync_uploads_only_finalized_management_weekly_report(database, settings
     assert client.payloads[0]["finalized"] is True
     assert "private employee detail" not in str(client.payloads)
     assert database.report_sync_state(final_id)["status"] == "synced"
+    assert len(client.heartbeats) == 1
+    assert client.heartbeats[0]["metric_date"]
+    assert "pause_reasons" in client.heartbeats[0]
 
 
 def test_sync_is_disabled_without_new_consent(database, settings) -> None:

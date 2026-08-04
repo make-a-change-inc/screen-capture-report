@@ -55,6 +55,18 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(registration.status, 201);
   const { deviceToken } = await registration.json();
   assert.ok(deviceToken.length >= 40);
+  const heartbeat = await fetch("/api/v1/device/heartbeat", { method: "POST",
+    headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ metric_date: "2026-08-04", app_version: "0.4.0",
+      collection_state: "active", scheduled_count: 480, eligible_count: 450,
+      captured_count: 430, failed_count: 5, missing_count: 15, analyzed_count: 425,
+      analysis_failed_count: 5, pause_reasons: { locked: 20, idle: 10 }, policy_version: 0 }) });
+  assert.equal(heartbeat.status, 200);
+  const initialPolicy = await fetch("/api/v1/device/policy", {
+    headers: { authorization: `Bearer ${deviceToken}` },
+  });
+  assert.equal(initialPolicy.status, 200);
+  assert.equal((await initialPolicy.json()).version, 0);
 
   const renamed = await fetch("/api/v1/device/register", {
     method: "POST",
@@ -165,6 +177,8 @@ test("management report completes the admin API round trip", async (t) => {
     ["QA", "開発部"],
   );
   assert.equal(liveDashboard.reportCount, 1);
+  assert.equal(liveDashboard.deviceHeartbeats[0].captured_count, 430);
+  assert.equal(liveDashboard.deviceHeartbeats[0].pause_reasons.locked, 20);
   assert.deepEqual(liveDashboard.rows.map((item) => item.minutes), [720, 480]);
   assert.equal(liveDashboard.reports[0].revision, 2);
   assert.deepEqual(liveDashboard.reports[0].versions.map((item) => item.revision), [2, 1]);
@@ -217,12 +231,23 @@ test("management report completes the admin API round trip", async (t) => {
     headers: { ...mutationHeaders, "content-type": "application/json" },
     body: JSON.stringify({ employeeId: liveDashboard.employees[0].id, status: "granted",
       source: "労務確認" }) })).status, 201);
+  assert.equal((await fetch("/api/admin/collection-policy", { method: "PUT",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ collectionEnabled: true, excludedApps: ["1Password.exe"],
+      excludedUrlPatterns: ["https://bank.example/*"], excludedTimeRanges: ["12:00-13:00"],
+      purposeText: "業務改善とAI化候補の実測" }) })).status, 200);
+  const updatedPolicy = await fetch("/api/v1/device/policy", {
+    headers: { authorization: `Bearer ${deviceToken}` },
+  });
+  assert.equal(updatedPolicy.status, 200);
+  assert.equal((await updatedPolicy.json()).version, 1);
   const phase2Summary = await fetch("/api/dashboard/summary", { headers: sessionHeaders });
   const phase2Data = await phase2Summary.json();
   assert.equal(phase2Data.opportunityStates[0].status, "reviewing");
   assert.equal(phase2Data.classificationRules[0].automation_rate, 0.45);
   assert.equal(phase2Data.privacyRequests[0].status, "processing");
   assert.equal(phase2Data.consentEvents[0].status, "granted");
+  assert.equal(phase2Data.collectionPolicy.excludedApps[0], "1Password.exe");
 
   const betaRegistration = await fetch("/api/v1/device/register", { method: "POST",
     headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode: "company-code-beta",
