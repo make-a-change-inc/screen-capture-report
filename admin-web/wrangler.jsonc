@@ -6,7 +6,8 @@
 	"workers_dev": true,
 	"preview_urls": false,
 	"vars": {
-		"ADMIN_EMAIL": "admin@screen-capture-report.local"
+		"ADMIN_EMAIL": "admin@screen-capture-report.local",
+		"PUBLIC_ADMIN_URL": "https://screen-capture-report-admin.m-okamura-8e7.workers.dev"
 	},
 	"d1_databases": [
 		{
@@ -17,7 +18,7 @@
 	],
 	"triggers": {
 		"crons": [
-			"17 3 * * *"
+			"17 * * * *"
 		]
 	},
 	"observability": {

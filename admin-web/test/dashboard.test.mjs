@@ -77,6 +77,16 @@ test("multiple administrators, RBAC, MFA, and session controls are exposed", () 
   assert.match(dashboardPage, /Auditor/);
 });
 
+test("report PDF and delivery controls expose honest integration state", () => {
+  assert.match(dashboardPage, /deliveryChannelForm/);
+  assert.match(dashboardPage, /deliveryScheduleForm/);
+  assert.match(dashboardPage, /deliveryHistory/);
+  assert.match(dashboardPage, /pdf-audit/);
+  assert.match(dashboardPage, /\/deliver/);
+  assert.match(dashboardPage, /email_service_not_configured/);
+  assert.match(dashboardPage, /Cloudflare側未接続/);
+});
+
 test("dashboard loads live D1 data and handles incomplete states", () => {
   assert.match(dashboardPage, /api\('\/api\/dashboard\/summary'/);
   assert.match(dashboardPage, /aria-busy/);
