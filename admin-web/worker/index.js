@@ -153,6 +153,20 @@ const schemaStatements = [
     collection_enabled INTEGER NOT NULL DEFAULT 1, excluded_apps_json TEXT NOT NULL DEFAULT '[]',
     excluded_url_patterns_json TEXT NOT NULL DEFAULT '[]', excluded_time_ranges_json TEXT NOT NULL DEFAULT '[]',
     purpose_text TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS classification_corrections (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    report_id TEXT NOT NULL, from_category TEXT NOT NULL, to_category TEXT NOT NULL, minutes REAL NOT NULL,
+    reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'applied', created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL, applied_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS privacy_request_targets (request_id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS legal_holds (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    target_type TEXT NOT NULL, target_id TEXT NOT NULL, reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+    released_by TEXT, released_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS deletion_receipts (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    request_id TEXT NOT NULL UNIQUE, target_type TEXT NOT NULL, target_id_hash TEXT NOT NULL,
+    reports_deleted INTEGER NOT NULL, devices_deleted INTEGER NOT NULL, employees_deleted INTEGER NOT NULL,
+    executed_by TEXT NOT NULL, executed_at TEXT NOT NULL)`,
 ];
 
 async function ensureSchema(env) {
@@ -688,7 +702,8 @@ async function updateCollectionPolicy(request, env, company) {
 async function dashboardSummary(env, company) {
   const [employees, deviceSummary, deviceRows, reports, reportVersions, auditRows, settings,
     opportunityStates, classificationRules, privacyRequests, consentEvents, deviceHeartbeats,
-    collectionPolicy] = await Promise.all([
+    collectionPolicy, classificationCorrections, legalHolds, privacyTargets,
+    deletionReceipts] = await Promise.all([
     env.DB.prepare(
       `SELECT e.id, e.display_name, e.department, MAX(d.last_seen_at) AS last_seen_at
        FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
@@ -747,8 +762,16 @@ async function dashboardSummary(env, company) {
       JOIN employees e ON e.id=d.employee_id WHERE h.company_id=?
       ORDER BY h.metric_date DESC, h.received_at DESC LIMIT 1000`).bind(company.id).all(),
     env.DB.prepare("SELECT * FROM collection_policies WHERE company_id=?").bind(company.id).first(),
+    env.DB.prepare("SELECT * FROM classification_corrections WHERE company_id=? ORDER BY created_at DESC LIMIT 500")
+      .bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM legal_holds WHERE company_id=? ORDER BY created_at DESC LIMIT 200")
+      .bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM privacy_request_targets WHERE company_id=?").bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM deletion_receipts WHERE company_id=? ORDER BY executed_at DESC LIMIT 200")
+      .bind(company.id).all(),
   ]);
   const rows = [];
+  const correctedCategories = new Map();
   let fallbackCount = 0;
   let reportsWithRows = 0;
   for (const report of reports.results) {
@@ -758,6 +781,19 @@ async function dashboardSummary(env, company) {
       categories = categoriesFromReportHtml(html);
       fallbackCount += Number(categories.length > 0);
     }
+    for (const correction of classificationCorrections.results
+      .filter((item) => item.report_id === report.id && item.status === "applied").reverse()) {
+      const source = categories.find((item) => item.category === correction.from_category);
+      const amount = Math.min(Number(correction.minutes), Number(source?.minutes || 0));
+      if (source && amount > 0) {
+        source.minutes -= amount;
+        const target = categories.find((item) => item.category === correction.to_category);
+        if (target) target.minutes += amount;
+        else categories.push({ category: correction.to_category, minutes: amount });
+      }
+    }
+    categories = categories.filter((item) => item.minutes > 0);
+    correctedCategories.set(report.id, categories);
     reportsWithRows += Number(categories.length > 0);
     for (const item of categories) {
       rows.push({ periodStart: report.period_start, periodEnd: report.period_end,
@@ -774,7 +810,10 @@ async function dashboardSummary(env, company) {
     devices: deviceRows.results, deviceCount: Number(deviceSummary?.count || 0),
     reportCount: reports.results.length, latestDeviceSyncAt: deviceSummary?.last_seen_at || null,
     reports: reports.results.map(({ content_cipher, content_nonce, categories_json, ...report }) => ({
-      ...report, categories: normalizeCategories(JSON.parse(categories_json || "[]")), revision: Number(report.revision || 1),
+      ...report, categories: correctedCategories.get(report.id) || normalizeCategories(JSON.parse(categories_json || "[]")),
+      revision: Number(report.revision || 1),
+      reaggregationVersion: 1 + classificationCorrections.results.filter(
+        (item) => item.report_id === report.id && item.status === "applied").length,
       versions: reportVersions.results.filter((version) => version.report_id === report.id),
     })),
     auditEvents: auditRows.results.map((item) => ({ ...item,
@@ -796,6 +835,10 @@ async function dashboardSummary(env, company) {
       purposeText: collectionPolicy.purpose_text, updatedAt: collectionPolicy.updated_at } :
       { version: 0, collectionEnabled: true, excludedApps: [], excludedUrlPatterns: [],
         excludedTimeRanges: [], purposeText: "", updatedAt: null },
+    classificationCorrections: classificationCorrections.results,
+    legalHolds: legalHolds.results,
+    privacyRequestTargets: privacyTargets.results,
+    deletionReceipts: deletionReceipts.results,
     rows,
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
       reportsParsedFromEncryptedContent: fallbackCount,
@@ -908,23 +951,158 @@ async function upsertClassificationRule(request, env, company) {
   return json({ ok: true });
 }
 
+async function createClassificationCorrection(request, env, company) {
+  const body = await request.json();
+  const reportId = String(body.reportId || "").trim();
+  const fromCategory = String(body.fromCategory || "").trim().slice(0, 128);
+  const toCategory = String(body.toCategory || "").trim().slice(0, 128);
+  const minutes = Number(body.minutes);
+  const reason = String(body.reason || "").trim().slice(0, 1000);
+  if (!reportId || !fromCategory || !toCategory || fromCategory === toCategory
+    || !Number.isFinite(minutes) || minutes <= 0 || !reason) {
+    return json({ error: "invalid_correction" }, 400);
+  }
+  const report = await env.DB.prepare(`SELECT m.categories_json, r.content_cipher, r.content_nonce
+    FROM reports r JOIN company_reports cr ON cr.report_id=r.id
+    LEFT JOIN report_metrics m ON m.report_id=r.id WHERE r.id=? AND cr.company_id=?`)
+    .bind(reportId, company.id).first();
+  if (!report) return json({ error: "report_not_found" }, 404);
+  let categories = normalizeCategories(JSON.parse(report.categories_json || "[]"));
+  if (!categories.length) {
+    categories = categoriesFromReportHtml(await decryptReport(env, report.content_cipher, report.content_nonce));
+  }
+  const available = categories
+    .find((item) => item.category === fromCategory)?.minutes || 0;
+  const moved = await env.DB.prepare(`SELECT COALESCE(SUM(minutes),0) AS total, COUNT(*) AS count
+    FROM classification_corrections WHERE company_id=? AND report_id=?
+    AND from_category=? AND status='applied'`).bind(company.id, reportId, fromCategory).first();
+  if (minutes > available - Number(moved?.total || 0)) {
+    return json({ error: "correction_exceeds_available_minutes" }, 409);
+  }
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await env.DB.prepare("INSERT INTO classification_corrections VALUES (?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?, ?)")
+    .bind(id, company.id, reportId, fromCategory, toCategory, minutes, reason, company.email, now, now).run();
+  await audit(env, "admin", company.email, "classification.corrected", "report", reportId,
+    { correctionId: id, fromCategory, toCategory, minutes, reasonLength: reason.length });
+  return json({ id, status: "applied", reaggregationVersion: Number(moved?.count || 0) + 2 }, 201);
+}
+
 async function createPrivacyRequest(request, env, company) {
   const body = await request.json();
   const requestType = String(body.requestType || "");
   const subject = String(body.subject || "").trim().slice(0, 256);
   const reason = String(body.reason || "").trim().slice(0, 1000);
+  const targetType = String(body.targetType || "").trim();
+  const targetId = String(body.targetId || "").trim();
   if (!["export", "deletion", "correction"].includes(requestType) || !subject) {
     return json({ error: "invalid_input" }, 400);
   }
+  if (targetType || targetId) {
+    if (!["employee", "report"].includes(targetType) || !targetId) {
+      return json({ error: "invalid_target" }, 400);
+    }
+    const table = targetType === "employee" ? "company_employees" : "company_reports";
+    const column = targetType === "employee" ? "employee_id" : "report_id";
+    const owned = await env.DB.prepare(`SELECT ${column} AS id FROM ${table} WHERE company_id=? AND ${column}=?`)
+      .bind(company.id, targetId).first();
+    if (!owned) return json({ error: "target_not_found" }, 404);
+  }
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  await env.DB.prepare(
+  const statements = [env.DB.prepare(
     `INSERT INTO privacy_requests (id, company_id, request_type, subject, status, reason,
      requested_by, requested_at) VALUES (?, ?, ?, ?, 'requested', ?, ?, ?)`,
-  ).bind(id, company.id, requestType, subject, reason || null, company.email, now).run();
+  ).bind(id, company.id, requestType, subject, reason || null, company.email, now)];
+  if (targetType) statements.push(env.DB.prepare("INSERT INTO privacy_request_targets VALUES (?, ?, ?, ?)")
+    .bind(id, company.id, targetType, targetId));
+  await env.DB.batch(statements);
   await audit(env, "admin", company.email, "privacy_request.created", "company", company.id,
-    { requestId: id, requestType });
+    { requestId: id, requestType, targetType: targetType || null });
   return json({ id, status: "requested" }, 201);
+}
+
+async function createLegalHold(request, env, company) {
+  const body = await request.json();
+  const targetType = String(body.targetType || "");
+  const targetId = String(body.targetId || "").trim();
+  const reason = String(body.reason || "").trim().slice(0, 1000);
+  if (!["company", "employee", "report"].includes(targetType) || !targetId || !reason
+    || (targetType === "company" && targetId !== company.id)) return json({ error: "invalid_hold" }, 400);
+  if (targetType !== "company") {
+    const table = targetType === "employee" ? "company_employees" : "company_reports";
+    const column = targetType === "employee" ? "employee_id" : "report_id";
+    if (!await env.DB.prepare(`SELECT ${column} FROM ${table} WHERE company_id=? AND ${column}=?`)
+      .bind(company.id, targetId).first()) return json({ error: "target_not_found" }, 404);
+  }
+  const id = crypto.randomUUID(), now = new Date().toISOString();
+  await env.DB.prepare("INSERT INTO legal_holds VALUES (?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL)")
+    .bind(id, company.id, targetType, targetId, reason, company.email, now).run();
+  await audit(env, "admin", company.email, "legal_hold.created", "company", company.id,
+    { holdId: id, targetType, targetIdHash: await sha256(targetId) });
+  return json({ id, status: "active" }, 201);
+}
+
+async function releaseLegalHold(env, company, holdId) {
+  const hold = await env.DB.prepare("SELECT status FROM legal_holds WHERE id=? AND company_id=?")
+    .bind(holdId, company.id).first();
+  if (!hold) return json({ error: "not_found" }, 404);
+  if (hold.status !== "active") return json({ error: "hold_not_active" }, 409);
+  const now = new Date().toISOString();
+  await env.DB.prepare("UPDATE legal_holds SET status='released', released_by=?, released_at=? WHERE id=? AND company_id=?")
+    .bind(company.email, now, holdId, company.id).run();
+  await audit(env, "admin", company.email, "legal_hold.released", "company", company.id, { holdId });
+  return json({ ok: true, status: "released" });
+}
+
+async function executeDeletionRequest(env, company, requestId) {
+  const item = await env.DB.prepare(`SELECT p.request_type, p.status, t.target_type, t.target_id
+    FROM privacy_requests p JOIN privacy_request_targets t ON t.request_id=p.id AND t.company_id=p.company_id
+    WHERE p.id=? AND p.company_id=?`).bind(requestId, company.id).first();
+  if (!item) return json({ error: "targeted_request_not_found" }, 404);
+  if (item.request_type !== "deletion" || item.status !== "processing") {
+    return json({ error: "request_not_executable" }, 409);
+  }
+  const hold = await env.DB.prepare(`SELECT id FROM legal_holds WHERE company_id=? AND status='active' AND
+    ((target_type='company' AND target_id=?) OR (target_type=? AND target_id=?)) LIMIT 1`)
+    .bind(company.id, company.id, item.target_type, item.target_id).first();
+  if (hold) return json({ error: "legal_hold_active", holdId: hold.id }, 409);
+  const reportIds = item.target_type === "report" ? [{ id: item.target_id }] :
+    (await env.DB.prepare(`SELECT r.id FROM reports r JOIN company_reports cr ON cr.report_id=r.id
+      WHERE cr.company_id=? AND r.employee_id=?`).bind(company.id, item.target_id).all()).results;
+  const devices = item.target_type === "employee" ? (await env.DB.prepare(`SELECT d.id FROM devices d
+    JOIN company_devices cd ON cd.device_id=d.id WHERE cd.company_id=? AND d.employee_id=?`)
+    .bind(company.id, item.target_id).all()).results : [];
+  const statements = [];
+  for (const report of reportIds) statements.push(
+    env.DB.prepare("DELETE FROM report_versions WHERE report_id=?").bind(report.id),
+    env.DB.prepare("DELETE FROM report_workflows WHERE report_id=? AND company_id=?").bind(report.id, company.id),
+    env.DB.prepare("DELETE FROM classification_corrections WHERE report_id=? AND company_id=?").bind(report.id, company.id),
+    env.DB.prepare("DELETE FROM report_metrics WHERE report_id=?").bind(report.id),
+    env.DB.prepare("DELETE FROM company_reports WHERE report_id=? AND company_id=?").bind(report.id, company.id),
+    env.DB.prepare("DELETE FROM reports WHERE id=?").bind(report.id));
+  if (item.target_type === "employee") {
+    for (const device of devices) statements.push(
+      env.DB.prepare("DELETE FROM device_heartbeats WHERE device_id=? AND company_id=?").bind(device.id, company.id),
+      env.DB.prepare("DELETE FROM idempotency_keys WHERE device_id=?").bind(device.id),
+      env.DB.prepare("DELETE FROM company_devices WHERE device_id=? AND company_id=?").bind(device.id, company.id),
+      env.DB.prepare("DELETE FROM devices WHERE id=?").bind(device.id));
+    statements.push(env.DB.prepare("DELETE FROM consent_events WHERE employee_id=? AND company_id=?")
+      .bind(item.target_id, company.id), env.DB.prepare("DELETE FROM company_employees WHERE employee_id=? AND company_id=?")
+      .bind(item.target_id, company.id), env.DB.prepare("DELETE FROM employees WHERE id=?").bind(item.target_id));
+  }
+  const now = new Date().toISOString(), receiptId = crypto.randomUUID();
+  statements.push(env.DB.prepare(`INSERT INTO deletion_receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(receiptId, company.id, requestId, item.target_type, await sha256(item.target_id), reportIds.length,
+      devices.length, Number(item.target_type === "employee"), company.email, now),
+    env.DB.prepare("UPDATE privacy_requests SET status='completed', resolved_by=?, resolved_at=? WHERE id=? AND company_id=?")
+      .bind(company.email, now, requestId, company.id));
+  await env.DB.batch(statements);
+  await audit(env, "admin", company.email, "privacy_deletion.executed", "company", company.id,
+    { requestId, receiptId, targetType: item.target_type, reportsDeleted: reportIds.length,
+      devicesDeleted: devices.length, employeesDeleted: Number(item.target_type === "employee") });
+  return json({ ok: true, receiptId, reportsDeleted: reportIds.length, devicesDeleted: devices.length,
+    employeesDeleted: Number(item.target_type === "employee") });
 }
 
 async function updatePrivacyRequest(request, env, company, requestId) {
@@ -981,7 +1159,11 @@ async function runRetention(env) {
     const auditCutoff = new Date(Date.now() - Number(company.audit_days) * 86400 * 1000).toISOString();
     const expired = await env.DB.prepare(
       `SELECT r.id FROM reports r JOIN company_reports cr ON cr.report_id=r.id
-       WHERE cr.company_id=? AND r.received_at<? LIMIT 500`,
+       WHERE cr.company_id=? AND r.received_at<? AND NOT EXISTS (
+         SELECT 1 FROM legal_holds h WHERE h.company_id=cr.company_id AND h.status='active' AND
+         ((h.target_type='company' AND h.target_id=cr.company_id) OR
+          (h.target_type='report' AND h.target_id=r.id) OR
+          (h.target_type='employee' AND h.target_id=r.employee_id))) LIMIT 500`,
     ).bind(company.id, reportCutoff).all();
     statements.push(env.DB.prepare(
       `DELETE FROM audit_events WHERE occurred_at<? AND (
@@ -997,6 +1179,7 @@ async function runRetention(env) {
       statements.push(env.DB.prepare("DELETE FROM company_reports WHERE report_id=?").bind(row.id));
       statements.push(env.DB.prepare("DELETE FROM report_versions WHERE report_id=?").bind(row.id));
       statements.push(env.DB.prepare("DELETE FROM report_workflows WHERE report_id=?").bind(row.id));
+      statements.push(env.DB.prepare("DELETE FROM classification_corrections WHERE report_id=?").bind(row.id));
       statements.push(env.DB.prepare("DELETE FROM report_metrics WHERE report_id=?").bind(row.id));
       statements.push(env.DB.prepare("DELETE FROM reports WHERE id=?").bind(row.id));
       statements.push(env.DB.prepare(
@@ -1063,6 +1246,10 @@ async function adminApi(request, env, pathname) {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
     return upsertClassificationRule(request, env, company);
   }
+  if (request.method === "POST" && pathname === "/api/admin/classification-corrections") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return createClassificationCorrection(request, env, company);
+  }
   if (request.method === "POST" && pathname === "/api/admin/privacy-requests") {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
     return createPrivacyRequest(request, env, company);
@@ -1075,6 +1262,20 @@ async function adminApi(request, env, pathname) {
   if (request.method === "POST" && pathname === "/api/admin/consent-events") {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
     return recordConsent(request, env, company);
+  }
+  if (request.method === "POST" && pathname === "/api/admin/legal-holds") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return createLegalHold(request, env, company);
+  }
+  const holdMatch = pathname.match(/^\/api\/admin\/legal-holds\/([^/]+)\/release$/);
+  if (request.method === "POST" && holdMatch) {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return releaseLegalHold(env, company, holdMatch[1]);
+  }
+  const executeDeletionMatch = pathname.match(/^\/api\/admin\/privacy-requests\/([^/]+)\/execute-deletion$/);
+  if (request.method === "POST" && executeDeletionMatch) {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return executeDeletionRequest(env, company, executeDeletionMatch[1]);
   }
   if (request.method === "PUT" && pathname === "/api/admin/collection-policy") {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);

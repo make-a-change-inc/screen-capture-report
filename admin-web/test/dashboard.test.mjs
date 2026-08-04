@@ -53,6 +53,17 @@ test("phase 2 management workflows are exposed in the dashboard", () => {
   assert.match(dashboardPage, /\/api\/admin\/consent-events/);
 });
 
+test("classification correction and deletion governance are exposed", () => {
+  assert.match(dashboardPage, /classificationCorrectionForm/);
+  assert.match(dashboardPage, /targetedDeletionForm/);
+  assert.match(dashboardPage, /legalHoldForm/);
+  assert.match(dashboardPage, /deletionReceiptTable/);
+  assert.match(dashboardPage, /\/api\/admin\/classification-corrections/);
+  assert.match(dashboardPage, /\/api\/admin\/legal-holds/);
+  assert.match(dashboardPage, /execute-deletion/);
+  assert.match(dashboardPage, /window\.confirm/);
+});
+
 test("dashboard loads live D1 data and handles incomplete states", () => {
   assert.match(dashboardPage, /api\('\/api\/dashboard\/summary'/);
   assert.match(dashboardPage, /aria-busy/);

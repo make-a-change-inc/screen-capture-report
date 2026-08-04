@@ -75,6 +75,7 @@ test("management report completes the admin API round trip", async (t) => {
       employeeId: "employee-rename", department: "QA", deviceName: "RENAME-PC" }),
   });
   assert.equal(renamed.status, 201);
+  const renamedBody = await renamed.json();
 
   const oversizedCompanyCode = await fetch("/api/v1/device/register", {
     method: "POST",
@@ -172,6 +173,7 @@ test("management report completes the admin API round trip", async (t) => {
   const liveDashboard = await live.json();
   assert.equal(liveDashboard.employeeCount, 2);
   assert.equal(liveDashboard.employees.length, 2);
+  renamedBody.employeeId = liveDashboard.employees.find((item) => item.department === "QA").id;
   assert.deepEqual(
     liveDashboard.employees.map((item) => item.department).sort(),
     ["QA", "開発部"],
@@ -249,6 +251,43 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(phase2Data.consentEvents[0].status, "granted");
   assert.equal(phase2Data.collectionPolicy.excludedApps[0], "1Password.exe");
 
+  const correction = await fetch("/api/admin/classification-corrections", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ reportId: report.report_id, fromCategory: "development",
+      toCategory: "administration", minutes: 120, reason: "管理作業を誤って開発に分類" }) });
+  assert.equal(correction.status, 201);
+  const correctedSummary = await fetch("/api/dashboard/summary", { headers: sessionHeaders });
+  const correctedData = await correctedSummary.json();
+  assert.equal(correctedData.reports[0].reaggregationVersion, 2);
+  assert.equal(correctedData.rows.find((item) => item.category === "development").minutes, 600);
+  assert.equal(correctedData.rows.find((item) => item.category === "administration").minutes, 120);
+
+  const holdCreated = await fetch("/api/admin/legal-holds", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ targetType: "employee", targetId: renamedBody.employeeId,
+      reason: "係争対応のため保持" }) });
+  assert.equal(holdCreated.status, 201);
+  const holdId = (await holdCreated.json()).id;
+  const deletionCreated = await fetch("/api/admin/privacy-requests", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ requestType: "deletion", targetType: "employee",
+      targetId: renamedBody.employeeId, subject: "QA従業員", reason: "本人から削除依頼" }) });
+  assert.equal(deletionCreated.status, 201);
+  const deletionId = (await deletionCreated.json()).id;
+  assert.equal((await fetch(`/api/admin/privacy-requests/${deletionId}`, { method: "PATCH",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "processing" }) })).status, 200);
+  assert.equal((await fetch(`/api/admin/privacy-requests/${deletionId}/execute-deletion`, {
+    method: "POST", headers: mutationHeaders })).status, 409);
+  assert.equal((await fetch(`/api/admin/legal-holds/${holdId}/release`, {
+    method: "POST", headers: mutationHeaders })).status, 200);
+  const executedDeletion = await fetch(`/api/admin/privacy-requests/${deletionId}/execute-deletion`, {
+    method: "POST", headers: mutationHeaders });
+  assert.equal(executedDeletion.status, 200);
+  assert.equal((await executedDeletion.json()).employeesDeleted, 1);
+  const postDeletion = await fetch("/api/dashboard/summary", { headers: sessionHeaders });
+  assert.equal((await postDeletion.json()).employeeCount, 1);
+
   const betaRegistration = await fetch("/api/v1/device/register", { method: "POST",
     headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode: "company-code-beta",
       employeeId: "beta-employee", department: "営業", deviceName: "BETA-PC" }) });
@@ -272,11 +311,24 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal((await fetch(`/api/admin/privacy-requests/${privacyId}`, { method: "PATCH",
     headers: { ...betaHeaders, "x-csrf-token": betaLoginBody.csrfToken,
       "content-type": "application/json" }, body: JSON.stringify({ status: "completed" }) })).status, 404);
+  const betaMutationHeaders = { ...betaHeaders, "x-csrf-token": betaLoginBody.csrfToken,
+    "content-type": "application/json" };
+  assert.equal((await fetch("/api/admin/classification-corrections", { method: "POST",
+    headers: betaMutationHeaders, body: JSON.stringify({ reportId: report.report_id,
+      fromCategory: "development", toCategory: "administration", minutes: 1,
+      reason: "cross tenant" }) })).status, 404);
+  assert.equal((await fetch(`/api/admin/legal-holds/${holdId}/release`, { method: "POST",
+    headers: betaMutationHeaders })).status, 404);
+  assert.equal((await fetch(`/api/admin/privacy-requests/${deletionId}/execute-deletion`, {
+    method: "POST", headers: betaMutationHeaders })).status, 404);
 
   const badCsrf = await fetch("/api/admin/settings", { method: "PATCH", headers: {
     ...sessionHeaders, "content-type": "application/json" }, body: JSON.stringify({ timezone: "Asia/Tokyo",
       weekStart: 1, reportRetentionDays: 90, auditRetentionDays: 365 }) });
   assert.equal(badCsrf.status, 403);
+  assert.equal((await fetch("/api/admin/legal-holds", { method: "POST", headers: {
+    ...sessionHeaders, "content-type": "application/json" }, body: JSON.stringify({
+      targetType: "company", targetId: liveDashboard.company.id, reason: "missing csrf" }) })).status, 403);
 
   const settings = await fetch("/api/admin/settings", { method: "PATCH", headers: {
     ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({ timezone: "Asia/Tokyo",
