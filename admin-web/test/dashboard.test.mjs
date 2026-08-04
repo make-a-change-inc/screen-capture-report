@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { dashboardPage } from "../worker/dashboard-page.js";
@@ -10,6 +11,11 @@ test("dashboard uses server-side cookie sessions without browser password storag
   assert.match(authenticatedDashboardPage, /\/api\/auth\/logout/);
   assert.match(authenticatedDashboardPage, /credentials:'same-origin'/);
   assert.doesNotMatch(authenticatedDashboardPage, /sessionStorage|localStorage|x-admin-password/);
+});
+
+test("worker source does not retain the retired browser-password implementation", () => {
+  const workerSource = readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+  assert.doesNotMatch(workerSource, /legacyPage|scr-admin-password|x-admin-password/);
 });
 
 test("dashboard exposes real Japanese navigation pages", () => {
