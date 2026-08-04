@@ -26,7 +26,7 @@ test("employees remain read-only and reports have accessible detail controls", (
   assert.match(dashboardPage, /作成・編集・削除は行いません/);
   assert.doesNotMatch(dashboardPage, /従業員を作成|従業員を編集|従業員を削除/);
   assert.match(dashboardPage, /data-report=/);
-  assert.match(dashboardPage, /詳細を閲覧/);
+  assert.match(dashboardPage, /詳細・版履歴/);
   assert.match(dashboardPage, /sandbox=""/);
 });
 
@@ -35,7 +35,22 @@ test("unclear categories are localized and excluded from AI proposals", () => {
   assert.match(dashboardPage, /administration:'管理・事務'/);
   assert.match(dashboardPage, /development:'開発'/);
   assert.match(dashboardPage, /filter\(x=>!unclear\(x\.category\)\)/);
-  assert.match(dashboardPage, /暫定自動化率/);
+  assert.match(dashboardPage, /自動化率は分類ルールで管理する試算係数/);
+  assert.match(dashboardPage, /「その他」「未分類」はAI化候補から除外/);
+});
+
+test("phase 2 management workflows are exposed in the dashboard", () => {
+  assert.match(dashboardPage, /レビュー状態・担当者・次のアクションを管理/);
+  assert.match(dashboardPage, /data-report-status/);
+  assert.match(dashboardPage, /classificationForm/);
+  assert.match(dashboardPage, /privacyRequestForm/);
+  assert.match(dashboardPage, /consentForm/);
+  assert.match(dashboardPage, /\/api\/admin\/reports\//);
+  assert.match(dashboardPage, /\/workflow/);
+  assert.match(dashboardPage, /\/api\/admin\/opportunities\/state/);
+  assert.match(dashboardPage, /\/api\/admin\/classification-rules/);
+  assert.match(dashboardPage, /\/api\/admin\/privacy-requests/);
+  assert.match(dashboardPage, /\/api\/admin\/consent-events/);
 });
 
 test("dashboard loads live D1 data and handles incomplete states", () => {

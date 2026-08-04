@@ -122,6 +122,27 @@ const schemaStatements = [
     week_start INTEGER NOT NULL DEFAULT 1, report_retention_days INTEGER NOT NULL DEFAULT 90,
     audit_retention_days INTEGER NOT NULL DEFAULT 365, updated_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_audit_events_occurred ON audit_events(occurred_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS report_versions (id TEXT PRIMARY KEY, report_id TEXT NOT NULL,
+    revision INTEGER NOT NULL, content_cipher BLOB NOT NULL, content_nonce BLOB NOT NULL,
+    content_sha256 TEXT NOT NULL, generated_at TEXT NOT NULL, received_at TEXT NOT NULL,
+    created_at TEXT NOT NULL, UNIQUE(report_id, revision))`,
+  `CREATE TABLE IF NOT EXISTS report_workflows (report_id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'finalized', review_note TEXT, updated_by TEXT NOT NULL,
+    updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS opportunity_states (company_id TEXT NOT NULL, opportunity_key TEXT NOT NULL,
+    department TEXT NOT NULL, category TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'new', owner TEXT,
+    next_action TEXT, decision_reason TEXT, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY(company_id, opportunity_key))`,
+  `CREATE TABLE IF NOT EXISTS classification_rules (company_id TEXT NOT NULL, category TEXT NOT NULL,
+    display_name TEXT NOT NULL, automation_rate REAL NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    updated_by TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(company_id, category))`,
+  `CREATE TABLE IF NOT EXISTS privacy_requests (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    request_type TEXT NOT NULL, subject TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'requested',
+    reason TEXT, requested_by TEXT NOT NULL, requested_at TEXT NOT NULL, resolved_by TEXT,
+    resolved_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS consent_events (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    employee_id TEXT, status TEXT NOT NULL, source TEXT NOT NULL, occurred_at TEXT NOT NULL,
+    recorded_by TEXT NOT NULL)`,
 ];
 
 async function ensureSchema(env) {
@@ -424,7 +445,7 @@ async function uploadReport(request, env) {
     return json({ error: "report_too_large" }, 413);
   }
   const existing = await env.DB.prepare(
-    `SELECT id, revision FROM reports WHERE employee_id=? AND period_start=?
+    `SELECT id, revision, content_sha256 FROM reports WHERE employee_id=? AND period_start=?
      AND kind='weekly' AND audience='management'`,
   ).bind(device.employee_id, report.periodStart).first();
   if (existing && Number(existing.revision) > report.revision) {
@@ -432,6 +453,10 @@ async function uploadReport(request, env) {
   }
   const encrypted = await encryptReport(env, report.reportHtml);
   const contentHash = await sha256(report.reportHtml);
+  if (existing && Number(existing.revision) === report.revision
+      && existing.content_sha256 !== contentHash) {
+    return json({ error: "revision_content_conflict" }, 409);
+  }
   const now = new Date().toISOString();
   const reportId = existing?.id || report.reportId;
   const responseBody = JSON.stringify({ ok: true, reportId, receivedAt: now });
@@ -469,6 +494,17 @@ async function uploadReport(request, env) {
     env.DB.prepare(
       "INSERT OR IGNORE INTO company_reports (company_id, report_id) VALUES (?, ?)",
     ).bind(device.company_id, reportId),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO report_versions (id, report_id, revision, content_cipher,
+       content_nonce, content_sha256, generated_at, received_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(crypto.randomUUID(), reportId, report.revision, encrypted.cipher, encrypted.nonce,
+      contentHash, report.generatedAt, now, now),
+    env.DB.prepare(
+      `INSERT INTO report_workflows (report_id, company_id, status, review_note, updated_by, updated_at)
+       VALUES (?, ?, 'finalized', NULL, ?, ?)
+       ON CONFLICT(report_id) DO NOTHING`,
+    ).bind(reportId, device.company_id, device.id, now),
   ]);
   await audit(env, "device", device.id, "report.received", "report", reportId, {
     periodStart: report.periodStart,
@@ -550,7 +586,8 @@ function normalizeCategories(value) {
 }
 
 async function dashboardSummary(env, company) {
-  const [employees, deviceSummary, deviceRows, reports, auditRows, settings] = await Promise.all([
+  const [employees, deviceSummary, deviceRows, reports, reportVersions, auditRows, settings,
+    opportunityStates, classificationRules, privacyRequests, consentEvents] = await Promise.all([
     env.DB.prepare(
       `SELECT e.id, e.display_name, e.department, MAX(d.last_seen_at) AS last_seen_at
        FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
@@ -574,11 +611,18 @@ async function dashboardSummary(env, company) {
       `SELECT r.id, r.employee_id, r.period_start, r.period_end, r.revision, r.generated_at,
        r.received_at, e.display_name, e.department, r.content_sha256,
        r.content_cipher, r.content_nonce, m.active_minutes, m.idle_minutes,
-       m.capture_count, m.work_log_count, m.categories_json
+       m.capture_count, m.work_log_count, m.categories_json,
+       COALESCE(w.status,'finalized') AS workflow_status, w.review_note, w.updated_at AS workflow_updated_at
        FROM company_reports cr JOIN reports r ON r.id=cr.report_id
        JOIN employees e ON e.id=r.employee_id
        LEFT JOIN report_metrics m ON m.report_id=r.id
+       LEFT JOIN report_workflows w ON w.report_id=r.id AND w.company_id=cr.company_id
        WHERE cr.company_id=? AND e.status='active' ORDER BY r.period_start DESC LIMIT 200`,
+    ).bind(company.id).all(),
+    env.DB.prepare(
+      `SELECT v.id, v.report_id, v.revision, v.content_sha256, v.generated_at, v.received_at
+       FROM report_versions v JOIN company_reports cr ON cr.report_id=v.report_id
+       WHERE cr.company_id=? ORDER BY v.report_id, v.revision DESC`,
     ).bind(company.id).all(),
     env.DB.prepare(
       `SELECT id, actor_type, actor_id, action, target_type, target_id, occurred_at, metadata_json
@@ -589,6 +633,14 @@ async function dashboardSummary(env, company) {
        ORDER BY occurred_at DESC LIMIT 200`,
     ).bind(company.id, company.id, company.id).all(),
     env.DB.prepare("SELECT * FROM company_settings WHERE company_id=?").bind(company.id).first(),
+    env.DB.prepare("SELECT * FROM opportunity_states WHERE company_id=? ORDER BY updated_at DESC")
+      .bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM classification_rules WHERE company_id=? ORDER BY category")
+      .bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM privacy_requests WHERE company_id=? ORDER BY requested_at DESC LIMIT 200")
+      .bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM consent_events WHERE company_id=? ORDER BY occurred_at DESC LIMIT 200")
+      .bind(company.id).all(),
   ]);
   const rows = [];
   let fallbackCount = 0;
@@ -617,12 +669,17 @@ async function dashboardSummary(env, company) {
     reportCount: reports.results.length, latestDeviceSyncAt: deviceSummary?.last_seen_at || null,
     reports: reports.results.map(({ content_cipher, content_nonce, categories_json, ...report }) => ({
       ...report, categories: normalizeCategories(JSON.parse(categories_json || "[]")), revision: Number(report.revision || 1),
+      versions: reportVersions.results.filter((version) => version.report_id === report.id),
     })),
     auditEvents: auditRows.results.map((item) => ({ ...item,
       metadata: JSON.parse(item.metadata_json || "{}"), metadata_json: undefined })),
     settings: settings || { timezone: "Asia/Tokyo", week_start: 1,
       report_retention_days: 90, audit_retention_days: 365 },
     admin: { email: company.email },
+    opportunityStates: opportunityStates.results,
+    classificationRules: classificationRules.results,
+    privacyRequests: privacyRequests.results,
+    consentEvents: consentEvents.results,
     rows,
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
       reportsParsedFromEncryptedContent: fallbackCount,
@@ -640,6 +697,159 @@ async function reportContent(env, company, reportId) {
   await audit(env, "admin", company.email, "report.viewed", "report", reportId);
   const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
   return json({ html, sha256: report.content_sha256, csp });
+}
+
+async function reportVersionContent(env, company, reportId, revision) {
+  const report = await env.DB.prepare(
+    `SELECT v.content_cipher, v.content_nonce, v.content_sha256 FROM report_versions v
+     JOIN company_reports cr ON cr.report_id=v.report_id
+     WHERE v.report_id=? AND v.revision=? AND cr.company_id=?`,
+  ).bind(reportId, revision, company.id).first();
+  if (!report) return json({ error: "not_found" }, 404);
+  const html = await decryptReport(env, report.content_cipher, report.content_nonce);
+  await audit(env, "admin", company.email, "report.version_viewed", "report", reportId, { revision });
+  const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+  return json({ html, sha256: report.content_sha256, csp, revision });
+}
+
+const reportTransitions = {
+  review_pending: ["finalized", "failed"],
+  finalized: ["review_pending", "delivered", "failed"],
+  failed: ["review_pending", "finalized"],
+  delivered: [],
+};
+
+async function updateReportWorkflow(request, env, company, reportId) {
+  const owned = await env.DB.prepare(
+    "SELECT report_id FROM company_reports WHERE company_id=? AND report_id=?",
+  ).bind(company.id, reportId).first();
+  if (!owned) return json({ error: "not_found" }, 404);
+  const body = await request.json();
+  const nextStatus = String(body.status || "");
+  const note = String(body.note || "").trim().slice(0, 1000);
+  const current = await env.DB.prepare(
+    "SELECT status FROM report_workflows WHERE company_id=? AND report_id=?",
+  ).bind(company.id, reportId).first();
+  const currentStatus = current?.status || "finalized";
+  if (!reportTransitions[currentStatus]?.includes(nextStatus)) {
+    return json({ error: "invalid_status_transition", currentStatus }, 409);
+  }
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO report_workflows VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(report_id) DO UPDATE SET status=excluded.status, review_note=excluded.review_note,
+     updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
+  ).bind(reportId, company.id, nextStatus, note || null, company.email, now).run();
+  await audit(env, "admin", company.email, "report.status_changed", "report", reportId,
+    { from: currentStatus, to: nextStatus, hasNote: Boolean(note) });
+  return json({ ok: true, status: nextStatus, updatedAt: now });
+}
+
+async function updateOpportunityState(request, env, company) {
+  const body = await request.json();
+  const department = String(body.department || "").trim().slice(0, 128);
+  const category = String(body.category || "").trim().slice(0, 128);
+  const status = String(body.status || "new");
+  const allowed = ["new", "reviewing", "planned", "poc", "implemented", "measuring", "rejected"];
+  if (!department || !category || !allowed.includes(status)) return json({ error: "invalid_input" }, 400);
+  const key = await sha256(`${department}\n${category}`);
+  const owner = String(body.owner || "").trim().slice(0, 128);
+  const nextAction = String(body.nextAction || "").trim().slice(0, 1000);
+  const reason = String(body.decisionReason || "").trim().slice(0, 1000);
+  if (["rejected", "implemented"].includes(status) && !reason) {
+    return json({ error: "decision_reason_required" }, 400);
+  }
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO opportunity_states VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(company_id, opportunity_key) DO UPDATE SET status=excluded.status,
+     owner=excluded.owner, next_action=excluded.next_action, decision_reason=excluded.decision_reason,
+     updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
+  ).bind(company.id, key, department, category, status, owner || null, nextAction || null,
+    reason || null, company.email, now).run();
+  await audit(env, "admin", company.email, "opportunity.updated", "company", company.id,
+    { opportunityKey: key, department, category, status });
+  return json({ ok: true, opportunityKey: key, status, updatedAt: now });
+}
+
+async function upsertClassificationRule(request, env, company) {
+  const body = await request.json();
+  const category = String(body.category || "").trim().slice(0, 128);
+  const displayName = String(body.displayName || "").trim().slice(0, 128);
+  const rate = Number(body.automationRate);
+  const status = String(body.status || "active");
+  if (!category || !displayName || !Number.isFinite(rate) || rate < 0 || rate > 1
+      || !["active", "inactive"].includes(status)) return json({ error: "invalid_input" }, 400);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO classification_rules VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(company_id, category) DO UPDATE SET display_name=excluded.display_name,
+     automation_rate=excluded.automation_rate, status=excluded.status,
+     updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
+  ).bind(company.id, category, displayName, rate, status, company.email, now).run();
+  await audit(env, "admin", company.email, "classification_rule.updated", "company", company.id,
+    { category, displayName, automationRate: rate, status });
+  return json({ ok: true });
+}
+
+async function createPrivacyRequest(request, env, company) {
+  const body = await request.json();
+  const requestType = String(body.requestType || "");
+  const subject = String(body.subject || "").trim().slice(0, 256);
+  const reason = String(body.reason || "").trim().slice(0, 1000);
+  if (!["export", "deletion", "correction"].includes(requestType) || !subject) {
+    return json({ error: "invalid_input" }, 400);
+  }
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO privacy_requests (id, company_id, request_type, subject, status, reason,
+     requested_by, requested_at) VALUES (?, ?, ?, ?, 'requested', ?, ?, ?)`,
+  ).bind(id, company.id, requestType, subject, reason || null, company.email, now).run();
+  await audit(env, "admin", company.email, "privacy_request.created", "company", company.id,
+    { requestId: id, requestType });
+  return json({ id, status: "requested" }, 201);
+}
+
+async function updatePrivacyRequest(request, env, company, requestId) {
+  const existing = await env.DB.prepare(
+    "SELECT status FROM privacy_requests WHERE id=? AND company_id=?",
+  ).bind(requestId, company.id).first();
+  if (!existing) return json({ error: "not_found" }, 404);
+  const body = await request.json();
+  const status = String(body.status || "");
+  const transitions = { requested: ["processing", "rejected"], processing: ["completed", "rejected"],
+    completed: [], rejected: [] };
+  if (!transitions[existing.status]?.includes(status)) return json({ error: "invalid_status_transition" }, 409);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    "UPDATE privacy_requests SET status=?, resolved_by=?, resolved_at=? WHERE id=? AND company_id=?",
+  ).bind(status, ["completed", "rejected"].includes(status) ? company.email : null,
+    ["completed", "rejected"].includes(status) ? now : null, requestId, company.id).run();
+  await audit(env, "admin", company.email, "privacy_request.status_changed", "company", company.id,
+    { requestId, from: existing.status, to: status });
+  return json({ ok: true, status });
+}
+
+async function recordConsent(request, env, company) {
+  const body = await request.json();
+  const employeeId = String(body.employeeId || "").trim();
+  const status = String(body.status || "");
+  const source = String(body.source || "admin_record").trim().slice(0, 128);
+  if (!["granted", "withdrawn"].includes(status)) return json({ error: "invalid_input" }, 400);
+  if (employeeId) {
+    const employee = await env.DB.prepare(
+      "SELECT employee_id FROM company_employees WHERE company_id=? AND employee_id=?",
+    ).bind(company.id, employeeId).first();
+    if (!employee) return json({ error: "employee_not_found" }, 404);
+  }
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await env.DB.prepare("INSERT INTO consent_events VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, company.id, employeeId || null, status, source, now, company.email).run();
+  await audit(env, "admin", company.email, "consent.recorded", "company", company.id,
+    { consentId: id, employeeId: employeeId || null, status });
+  return json({ id, status }, 201);
 }
 
 async function runRetention(env) {
@@ -669,6 +879,8 @@ async function runRetention(env) {
     ).bind(reportCutoff, company.id));
     for (const row of expired.results) {
       statements.push(env.DB.prepare("DELETE FROM company_reports WHERE report_id=?").bind(row.id));
+      statements.push(env.DB.prepare("DELETE FROM report_versions WHERE report_id=?").bind(row.id));
+      statements.push(env.DB.prepare("DELETE FROM report_workflows WHERE report_id=?").bind(row.id));
       statements.push(env.DB.prepare("DELETE FROM report_metrics WHERE report_id=?").bind(row.id));
       statements.push(env.DB.prepare("DELETE FROM reports WHERE id=?").bind(row.id));
       statements.push(env.DB.prepare(
@@ -717,6 +929,36 @@ async function adminApi(request, env, pathname) {
     if (!['analytics.exported'].includes(body.action)) return json({ error: "invalid_action" }, 400);
     await audit(env, "admin", company.email, body.action, "company", company.id);
     return json({ ok: true }, 201);
+  }
+  const workflowMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/workflow$/);
+  if (request.method === "PATCH" && workflowMatch) {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return updateReportWorkflow(request, env, company, workflowMatch[1]);
+  }
+  const versionMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/versions\/(\d+)\/content$/);
+  if (request.method === "GET" && versionMatch) {
+    return reportVersionContent(env, company, versionMatch[1], Number(versionMatch[2]));
+  }
+  if (request.method === "POST" && pathname === "/api/admin/opportunities/state") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return updateOpportunityState(request, env, company);
+  }
+  if (request.method === "PUT" && pathname === "/api/admin/classification-rules") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return upsertClassificationRule(request, env, company);
+  }
+  if (request.method === "POST" && pathname === "/api/admin/privacy-requests") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return createPrivacyRequest(request, env, company);
+  }
+  const privacyMatch = pathname.match(/^\/api\/admin\/privacy-requests\/([^/]+)$/);
+  if (request.method === "PATCH" && privacyMatch) {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return updatePrivacyRequest(request, env, company, privacyMatch[1]);
+  }
+  if (request.method === "POST" && pathname === "/api/admin/consent-events") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return recordConsent(request, env, company);
   }
   const contentMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/content$/);
   if (request.method === "GET" && contentMatch) return reportContent(env, company, contentMatch[1]);

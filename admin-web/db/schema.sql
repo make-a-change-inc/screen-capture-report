@@ -120,3 +120,10 @@ CREATE TABLE IF NOT EXISTS company_settings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_occurred ON audit_events(occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS report_versions (id TEXT PRIMARY KEY, report_id TEXT NOT NULL REFERENCES reports(id), revision INTEGER NOT NULL, content_cipher BLOB NOT NULL, content_nonce BLOB NOT NULL, content_sha256 TEXT NOT NULL, generated_at TEXT NOT NULL, received_at TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(report_id, revision));
+CREATE TABLE IF NOT EXISTS report_workflows (report_id TEXT PRIMARY KEY REFERENCES reports(id), company_id TEXT NOT NULL REFERENCES companies(id), status TEXT NOT NULL DEFAULT 'finalized', review_note TEXT, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS opportunity_states (company_id TEXT NOT NULL REFERENCES companies(id), opportunity_key TEXT NOT NULL, department TEXT NOT NULL, category TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'new', owner TEXT, next_action TEXT, decision_reason TEXT, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(company_id, opportunity_key));
+CREATE TABLE IF NOT EXISTS classification_rules (company_id TEXT NOT NULL REFERENCES companies(id), category TEXT NOT NULL, display_name TEXT NOT NULL, automation_rate REAL NOT NULL, status TEXT NOT NULL DEFAULT 'active', updated_by TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(company_id, category));
+CREATE TABLE IF NOT EXISTS privacy_requests (id TEXT PRIMARY KEY, company_id TEXT NOT NULL REFERENCES companies(id), request_type TEXT NOT NULL, subject TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'requested', reason TEXT, requested_by TEXT NOT NULL, requested_at TEXT NOT NULL, resolved_by TEXT, resolved_at TEXT);
+CREATE TABLE IF NOT EXISTS consent_events (id TEXT PRIMARY KEY, company_id TEXT NOT NULL REFERENCES companies(id), employee_id TEXT, status TEXT NOT NULL, source TEXT NOT NULL, occurred_at TEXT NOT NULL, recorded_by TEXT NOT NULL);
