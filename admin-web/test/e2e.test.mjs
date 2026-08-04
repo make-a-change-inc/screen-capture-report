@@ -6,48 +6,267 @@ import { Miniflare } from "miniflare";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 
-test("invitation enrollment accepts only final weekly aggregate reports", async (t) => {
+test("management report completes the admin API round trip", async (t) => {
   const adminEmail = "admin@example.test";
   const adminPassword = "local-admin-password";
+  const companyCode = "writeup";
+  const adminHeaders = { "x-company-code": companyCode, "x-admin-email": adminEmail,
+    "x-admin-password": adminPassword };
   const mf = new Miniflare({
-    compatibilityDate: "2026-07-20", modules: true,
-    modulesRules: [{ type: "ESModule", include: ["**/*.js"] }], scriptPath: "worker/index.js",
+    compatibilityDate: "2026-07-20",
+    modules: true,
+    modulesRules: [{ type: "ESModule", include: ["**/*.js"] }],
+    scriptPath: "worker/index.js",
     d1Databases: { DB: "screen-capture-report-test" },
-    bindings: { ADMIN_EMAIL: adminEmail, ADMIN_PASSWORD_HASH: digest(adminPassword), REPORT_ENCRYPTION_KEY_V1: randomBytes(32).toString("base64") },
+    bindings: {
+      ADMIN_EMAIL: adminEmail,
+      ADMIN_PASSWORD_HASH: digest(adminPassword),
+      REPORT_ENCRYPTION_KEY_V1: randomBytes(32).toString("base64"),
+      ALLOW_SELF_REGISTRATION: "true",
+    },
   });
   t.after(() => mf.dispose());
+
   const fetch = (path, init = {}) => mf.dispatchFetch(`http://localhost${path}`, init);
-  const adminHeaders = { "x-admin-email": adminEmail, "x-admin-password": adminPassword };
 
-  assert.equal((await fetch("/api/admin/dashboard")).status, 401);
-  const invitation = await fetch("/api/admin/invitation/rotate", { method: "POST", headers: adminHeaders });
-  assert.equal(invitation.status, 201);
-  const { invitationCode } = await invitation.json();
-  assert.ok(invitationCode.startsWith("SCR-"));
-  const replacementInvitation = await fetch("/api/admin/invitation/rotate", { method: "POST", headers: adminHeaders });
-  const { invitationCode: activeInvitationCode } = await replacementInvitation.json();
-  assert.notEqual(activeInvitationCode, invitationCode);
-  assert.equal((await fetch("/api/enroll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ inviteCode: invitationCode, displayName: "山田 花子", employeeId: "employee-1", department: "開発部" }) })).status, 401);
-  assert.equal((await fetch("/api/enroll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ inviteCode: "wrong", displayName: "山田 花子", employeeId: "employee-1", department: "開発部" }) })).status, 401);
+  const anonymous = await fetch("/api/admin/summary");
+  assert.equal(anonymous.status, 401);
 
-  const enrolled = await fetch("/api/enroll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ inviteCode: activeInvitationCode, displayName: "山田 花子", employeeId: "employee-1", department: "開発部" }) });
-  assert.equal(enrolled.status, 201);
-  const { deviceToken } = await enrolled.json();
-  const report = { schema_version: 1, report_id: "report-2026-07-13-yamada", period_start: "2026-07-13", period_end: "2026-07-19", revision: 1, kind: "weekly", audience: "management", finalized: true, generated_at: "2026-07-20T00:00:00.000Z", report_html: "<h1>週次管理レポート</h1>", metrics: { activeMinutes: 1200, categories: [{ category: "data_entry", minutes: 720 }, { category: "other", minutes: 60 }] } };
-  const upload = { method: "POST", headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json", "idempotency-key": report.report_id }, body: JSON.stringify(report) };
-  assert.equal((await fetch("/api/v1/device/reports/weekly-management", upload)).status, 201);
-  assert.equal((await fetch("/api/v1/device/reports/weekly-management", { ...upload, headers: { ...upload.headers, "idempotency-key": "daily" }, body: JSON.stringify({ ...report, report_id: "daily", kind: "daily", audience: "employee" }) })).status, 422);
+  const adminPage = await fetch("/admin");
+  assert.equal(adminPage.status, 200);
+  const adminHtml = await adminPage.text();
+  assert.match(adminHtml, /企業コード/);
+  assert.doesNotMatch(adminHtml, /\.scr-provision\.json/);
 
-  const users = await fetch("/api/admin/users?department=%E9%96%8B%E7%99%BA%E9%83%A8", { headers: adminHeaders });
-  const usersBody = await users.json();
-  assert.deepEqual(usersBody.users, [{ employeeId: "employee-1", displayName: "山田 花子", department: "開発部" }]);
-  const dashboard = await fetch("/api/admin/dashboard", { headers: adminHeaders });
-  const dashboardBody = await dashboard.json();
-  assert.deepEqual(dashboardBody.rows, [{ periodStart: "2026-07-13", periodEnd: "2026-07-19", department: "開発部", category: "データ入力・転記", minutes: 720, employeeCount: 1 }]);
-  assert.doesNotMatch(JSON.stringify(dashboardBody), /employee-1/);
+  const wrongEmail = await fetch("/api/admin/summary", {
+    headers: { ...adminHeaders, "x-admin-email": "other@example.test" },
+  });
+  assert.equal(wrongEmail.status, 401);
 
-  const reenrolled = await fetch("/api/enroll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ inviteCode: activeInvitationCode, displayName: "山田 花子", employeeId: "employee-1", department: "開発部" }) });
-  const { deviceToken: replacementToken } = await reenrolled.json();
-  assert.notEqual(replacementToken, deviceToken);
-  assert.equal((await fetch("/api/v1/device/reports/weekly-management", upload)).status, 401);
+  const registration = await fetch("/api/v1/device/register", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-company-code": companyCode },
+    body: JSON.stringify({
+      displayName: "山田 花子",
+      department: "開発部",
+      deviceName: "YAMADA-PC",
+    }),
+  });
+  assert.equal(registration.status, 201);
+  const { deviceToken } = await registration.json();
+  assert.ok(deviceToken.length >= 40);
+
+  const renamed = await fetch("/api/v1/device/register", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ companyCode, companyName: "株式会社ライトアップ",
+      employeeId: "employee-rename", department: "QA", deviceName: "RENAME-PC" }),
+  });
+  assert.equal(renamed.status, 201);
+
+  const oversizedCompanyCode = await fetch("/api/v1/device/register", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ companyCode: "x".repeat(101), employeeId: "employee-x",
+      department: "QA", deviceName: "TEST-PC" }),
+  });
+  assert.equal(oversizedCompanyCode.status, 401);
+
+  const report = {
+    schema_version: 1,
+    report_id: "report-2026-07-13-yamada",
+    period_start: "2026-07-13",
+    period_end: "2026-07-19",
+    revision: 1,
+    kind: "weekly",
+    audience: "management",
+    finalized: true,
+    generated_at: "2026-07-20T00:00:00.000Z",
+    report_html: "<h1>週次管理レポート</h1><p>テスト本文</p>",
+    metrics: {
+      activeMinutes: 1200,
+      idleMinutes: 60,
+      captureCount: 40,
+      workLogCount: 12,
+      categories: [{ category: "development", minutes: 720 }, { category: "research", minutes: 480 }],
+    },
+  };
+  const uploadInit = {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${deviceToken}`,
+      "content-type": "application/json",
+      "idempotency-key": report.report_id,
+    },
+    body: JSON.stringify(report),
+  };
+
+  const uploaded = await fetch("/api/v1/device/reports/weekly-management", uploadInit);
+  assert.equal(uploaded.status, 201);
+  const uploadedBody = await uploaded.json();
+  assert.equal(uploadedBody.reportId, report.report_id);
+
+  const duplicate = await fetch("/api/v1/device/reports/weekly-management", uploadInit);
+  assert.equal(duplicate.status, 200);
+  assert.equal((await duplicate.json()).reportId, report.report_id);
+
+  const reportV2 = { ...report, revision: 2,
+    generated_at: "2026-07-20T01:00:00.000Z",
+    report_html: "<h1>週次管理レポート v2</h1><p>レビュー反映済み</p>" };
+  const uploadedV2 = await fetch("/api/v1/device/reports/weekly-management", {
+    ...uploadInit, headers: { ...uploadInit.headers, "idempotency-key": `${report.report_id}-v2` },
+    body: JSON.stringify(reportV2),
+  });
+  assert.equal(uploadedV2.status, 200);
+  const conflictingV2 = await fetch("/api/v1/device/reports/weekly-management", {
+    ...uploadInit, headers: { ...uploadInit.headers, "idempotency-key": `${report.report_id}-v2-conflict` },
+    body: JSON.stringify({ ...reportV2, report_html: "<p>同一版の不正な差し替え</p>" }),
+  });
+  assert.equal(conflictingV2.status, 409);
+
+  const forbiddenDaily = await fetch("/api/v1/device/reports/weekly-management", {
+    ...uploadInit,
+    headers: { ...uploadInit.headers, "idempotency-key": "daily-report" },
+    body: JSON.stringify({ ...report, report_id: "daily-report", kind: "daily", audience: "employee" }),
+  });
+  assert.equal(forbiddenDaily.status, 422);
+
+  const unfinalized = await fetch("/api/v1/device/reports/weekly-management", {
+    ...uploadInit,
+    headers: { ...uploadInit.headers, "idempotency-key": "unfinalized-report" },
+    body: JSON.stringify({ ...report, report_id: "unfinalized-report", finalized: false }),
+  });
+  assert.equal(unfinalized.status, 422);
+
+  const login = await fetch("/api/auth/login", { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ companyCode, email: adminEmail, password: adminPassword }) });
+  assert.equal(login.status, 200);
+  const loginBody = await login.json();
+  const sessionCookie = login.headers.get("set-cookie").split(";")[0];
+  const sessionHeaders = { cookie: sessionCookie };
+  const mutationHeaders = { ...sessionHeaders, "x-csrf-token": loginBody.csrfToken };
+
+  const summary = await fetch("/api/admin/summary", { headers: sessionHeaders });
+  assert.equal(summary.status, 200);
+  const dashboard = await summary.json();
+  assert.equal(dashboard.company.name, "株式会社ライトアップ");
+  assert.equal(dashboard.employees.length, 2);
+  assert.equal(dashboard.reports.length, 1);
+  assert.equal(dashboard.reports[0].display_name, "山田 花子");
+
+  const live = await fetch("/api/dashboard/summary", { headers: sessionHeaders });
+  assert.equal(live.status, 200);
+  const liveDashboard = await live.json();
+  assert.equal(liveDashboard.employeeCount, 2);
+  assert.equal(liveDashboard.employees.length, 2);
+  assert.deepEqual(
+    liveDashboard.employees.map((item) => item.department).sort(),
+    ["QA", "開発部"],
+  );
+  assert.equal(liveDashboard.reportCount, 1);
+  assert.deepEqual(liveDashboard.rows.map((item) => item.minutes), [720, 480]);
+  assert.equal(liveDashboard.reports[0].revision, 2);
+  assert.deepEqual(liveDashboard.reports[0].versions.map((item) => item.revision), [2, 1]);
+
+  const content = await fetch(`/api/admin/reports/${report.report_id}/content`, {
+    headers: sessionHeaders,
+  });
+  assert.equal(content.status, 200);
+  const decrypted = await content.json();
+  assert.equal(decrypted.html, reportV2.report_html);
+  assert.equal(decrypted.sha256, digest(reportV2.report_html));
+  const firstVersion = await fetch(`/api/admin/reports/${report.report_id}/versions/1/content`, {
+    headers: sessionHeaders,
+  });
+  assert.equal(firstVersion.status, 200);
+  assert.equal((await firstVersion.json()).html, report.report_html);
+
+  const workflowToReview = await fetch(`/api/admin/reports/${report.report_id}/workflow`, {
+    method: "PATCH", headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "review_pending", note: "再確認" }),
+  });
+  assert.equal(workflowToReview.status, 200);
+  const invalidWorkflow = await fetch(`/api/admin/reports/${report.report_id}/workflow`, {
+    method: "PATCH", headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "delivered" }),
+  });
+  assert.equal(invalidWorkflow.status, 409);
+  assert.equal((await fetch(`/api/admin/reports/${report.report_id}/workflow`, {
+    method: "PATCH", headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "finalized" }),
+  })).status, 200);
+
+  assert.equal((await fetch("/api/admin/opportunities/state", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ department: "開発部", category: "development", status: "reviewing",
+      owner: "技術責任者", nextAction: "PoC計画を作成" }) })).status, 200);
+  assert.equal((await fetch("/api/admin/classification-rules", { method: "PUT",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ category: "development", displayName: "開発・レビュー",
+      automationRate: 0.45, status: "active" }) })).status, 200);
+  const privacyCreated = await fetch("/api/admin/privacy-requests", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ requestType: "export", subject: "山田 花子", reason: "本人確認" }) });
+  assert.equal(privacyCreated.status, 201);
+  const privacyId = (await privacyCreated.json()).id;
+  assert.equal((await fetch(`/api/admin/privacy-requests/${privacyId}`, { method: "PATCH",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "processing" }) })).status, 200);
+  assert.equal((await fetch("/api/admin/consent-events", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ employeeId: liveDashboard.employees[0].id, status: "granted",
+      source: "労務確認" }) })).status, 201);
+  const phase2Summary = await fetch("/api/dashboard/summary", { headers: sessionHeaders });
+  const phase2Data = await phase2Summary.json();
+  assert.equal(phase2Data.opportunityStates[0].status, "reviewing");
+  assert.equal(phase2Data.classificationRules[0].automation_rate, 0.45);
+  assert.equal(phase2Data.privacyRequests[0].status, "processing");
+  assert.equal(phase2Data.consentEvents[0].status, "granted");
+
+  const betaRegistration = await fetch("/api/v1/device/register", { method: "POST",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode: "company-code-beta",
+      employeeId: "beta-employee", department: "営業", deviceName: "BETA-PC" }) });
+  assert.equal(betaRegistration.status, 201);
+  const betaLogin = await fetch("/api/auth/login", { method: "POST",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode: "company-code-beta",
+      email: adminEmail, password: adminPassword }) });
+  assert.equal(betaLogin.status, 200);
+  const betaLoginBody = await betaLogin.json();
+  const betaHeaders = { cookie: betaLogin.headers.get("set-cookie").split(";")[0] };
+  const otherBootstrap = await fetch("/api/admin/summary", { headers: betaHeaders });
+  assert.equal(otherBootstrap.status, 200);
+  assert.equal((await otherBootstrap.json()).reports.length, 0);
+  const crossTenantContent = await fetch(`/api/admin/reports/${report.report_id}/content`, {
+    headers: betaHeaders,
+  });
+  assert.equal(crossTenantContent.status, 404);
+  assert.equal((await fetch(`/api/admin/reports/${report.report_id}/versions/1/content`, {
+    headers: betaHeaders,
+  })).status, 404);
+  assert.equal((await fetch(`/api/admin/privacy-requests/${privacyId}`, { method: "PATCH",
+    headers: { ...betaHeaders, "x-csrf-token": betaLoginBody.csrfToken,
+      "content-type": "application/json" }, body: JSON.stringify({ status: "completed" }) })).status, 404);
+
+  const badCsrf = await fetch("/api/admin/settings", { method: "PATCH", headers: {
+    ...sessionHeaders, "content-type": "application/json" }, body: JSON.stringify({ timezone: "Asia/Tokyo",
+      weekStart: 1, reportRetentionDays: 90, auditRetentionDays: 365 }) });
+  assert.equal(badCsrf.status, 403);
+
+  const settings = await fetch("/api/admin/settings", { method: "PATCH", headers: {
+    ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({ timezone: "Asia/Tokyo",
+      weekStart: 1, reportRetentionDays: 120, auditRetentionDays: 400 }) });
+  assert.equal(settings.status, 200);
+
+  const loggedOut = await fetch("/api/auth/logout", { method: "POST", headers: sessionHeaders });
+  assert.equal(loggedOut.status, 200);
+  assert.equal((await fetch("/api/dashboard/summary", { headers: sessionHeaders })).status, 401);
+
+  const failedStatuses = [];
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    failedStatuses.push((await fetch("/api/auth/login", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode,
+        email: "rate-limit@example.test", password: "wrong-password" }) })).status);
+  }
+  assert.deepEqual(failedStatuses, [401, 401, 401, 401, 401, 429]);
 });

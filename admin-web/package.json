@@ -13,6 +13,6 @@
     "db:migrate": "wrangler d1 execute DB --remote --file db/schema.sql"
   },
   "devDependencies": {
-    "wrangler": "4.112.0"
+    "wrangler": "4.115.0"
   }
 }

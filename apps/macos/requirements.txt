@@ -1,0 +1,9 @@
+mss
+google-generativeai
+requests
+schedule
+python-dotenv
+rumps
+Pillow
+pyobjc-framework-Quartz
+py2app
