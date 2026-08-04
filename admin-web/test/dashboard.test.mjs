@@ -4,69 +4,53 @@ import test from "node:test";
 import { dashboardPage } from "../worker/dashboard-page.js";
 import { authenticatedDashboardPage } from "../worker/authenticated-dashboard-page.js";
 
-test("deployed dashboard keeps company-scoped admin authentication", () => {
-  assert.match(authenticatedDashboardPage, /id="loginForm"/);
-  assert.match(authenticatedDashboardPage, /'x-company-code':auth\.code/);
-  assert.match(authenticatedDashboardPage, /source\.company\?\.name/);
-  assert.doesNotMatch(authenticatedDashboardPage, /onclick=load;load\(\)/);
+test("dashboard uses server-side cookie sessions without browser password storage", () => {
+  assert.match(authenticatedDashboardPage, /\/api\/auth\/login/);
+  assert.match(authenticatedDashboardPage, /\/api\/auth\/session/);
+  assert.match(authenticatedDashboardPage, /\/api\/auth\/logout/);
+  assert.match(authenticatedDashboardPage, /credentials:'same-origin'/);
+  assert.doesNotMatch(authenticatedDashboardPage, /sessionStorage|localStorage|x-admin-password/);
 });
 
-test("invalid credentials stay on login and logout clears the session", () => {
-  assert.match(authenticatedDashboardPage, /throw error}finally/);
-  assert.match(authenticatedDashboardPage, /id="logout"/);
-  assert.match(authenticatedDashboardPage, /sessionStorage\.removeItem\(key\)/);
-  assert.match(authenticatedDashboardPage, /企業コード、管理者ID、またはパスワードが正しくありません/);
-  assert.match(authenticatedDashboardPage, /q\('#login'\)\.style\.display='grid'/);
+test("dashboard exposes real Japanese navigation pages", () => {
+  for (const label of ["経営ダッシュボード", "業務分析", "AI化候補", "レポート", "従業員管理",
+    "端末・収集状況", "分類ルール・データ品質", "プライバシー・データ管理", "ユーザー・権限",
+    "監査ログ", "組織設定"]) assert.match(dashboardPage, new RegExp(label));
+  assert.match(dashboardPage, /data-page="reports"/);
+  assert.match(dashboardPage, /data-page="employees"/);
+  assert.doesNotMatch(dashboardPage, /OVERVIEW|GOVERNANCE|Employee management/);
 });
 
-test("dashboard localizes categories and provides read-only employee management", () => {
-  assert.match(authenticatedDashboardPage, /other:'その他（要分類）'/);
-  assert.match(authenticatedDashboardPage, /administration:'管理・事務'/);
-  assert.match(authenticatedDashboardPage, /development:'開発'/);
-  assert.match(authenticatedDashboardPage, /id="employeeManagement"/);
-  assert.match(authenticatedDashboardPage, /id="employeePage"/);
-  assert.match(authenticatedDashboardPage, /id="employeeRows"/);
-  assert.match(authenticatedDashboardPage, /source\.employees\?\.length/);
-  assert.match(authenticatedDashboardPage, /登録されている従業員を参照できます/);
-  assert.doesNotMatch(authenticatedDashboardPage, /新規作成|従業員を編集|従業員を削除/);
-  assert.doesNotMatch(authenticatedDashboardPage, /<h3>'\+esc\(item\.category\)/);
+test("employees remain read-only and reports have accessible detail controls", () => {
+  assert.match(dashboardPage, /従業員一覧（読み取り専用）/);
+  assert.match(dashboardPage, /作成・編集・削除は行いません/);
+  assert.doesNotMatch(dashboardPage, /従業員を作成|従業員を編集|従業員を削除/);
+  assert.match(dashboardPage, /data-report=/);
+  assert.match(dashboardPage, /詳細を閲覧/);
+  assert.match(dashboardPage, /sandbox=""/);
 });
 
-test("unclear categories are excluded from AI opportunity proposals", () => {
-  assert.match(authenticatedDashboardPage, /isUnclearCategory/);
-  assert.match(
-    authenticatedDashboardPage,
-    /items\.filter\(item=>!isUnclearCategory\(item\.category\)\)\.map/,
-  );
+test("unclear categories are localized and excluded from AI proposals", () => {
+  assert.match(dashboardPage, /other:'その他（要分類）'/);
+  assert.match(dashboardPage, /administration:'管理・事務'/);
+  assert.match(dashboardPage, /development:'開発'/);
+  assert.match(dashboardPage, /filter\(x=>!unclear\(x\.category\)\)/);
+  assert.match(dashboardPage, /暫定自動化率/);
 });
 
-test("dashboard loads live D1 data instead of embedded mock totals", () => {
-  assert.match(dashboardPage, /fetch\('\/api\/dashboard\/summary'/);
-  assert.doesNotMatch(dashboardPage, /Cloudflare D1/);
-  assert.match(dashboardPage, /実測データから、/);
-  assert.doesNotMatch(dashboardPage, /134\.3/);
-  assert.doesNotMatch(dashboardPage, /169\.3/);
-  assert.doesNotMatch(dashboardPage, /data-scenario=/);
+test("dashboard loads live D1 data and handles incomplete states", () => {
+  assert.match(dashboardPage, /api\('\/api\/dashboard\/summary'/);
+  assert.match(dashboardPage, /aria-busy/);
+  assert.match(dashboardPage, /検索条件に一致/);
+  assert.match(dashboardPage, /データを取得できませんでした/);
+  assert.match(dashboardPage, /取得予定数・分析成功率・停止理由は現行端末データに含まれない/);
+  assert.doesNotMatch(dashboardPage, /134\.3|169\.3/);
 });
 
-test("dashboard proposes the top three opportunities by estimated time savings", () => {
-  assert.match(dashboardPage, /AI化候補 TOP 3/);
-  assert.match(dashboardPage, /／週・人/);
-  assert.match(dashboardPage, /employeeIds/);
-  assert.match(dashboardPage, /sort\(\(a,b\)=>b\.saving-a\.saving\)\.slice\(0,3\)/);
-  assert.match(dashboardPage, /削減見込み時間は、端末で分類された実測業務時間にカテゴリ別の暫定試算係数を掛けた目安/);
-  assert.match(dashboardPage, /週次レポートを集計中/);
-  assert.match(dashboardPage, /個人単位の情報は表示していません/);
-});
-
-test("dashboard counts employees within the selected week and department", () => {
-  assert.match(dashboardPage, /scopedEmployeeIds/);
-  assert.match(dashboardPage, /q\('#employeeCount'\)\.textContent=scopedEmployeeIds\.size/);
-  assert.doesNotMatch(dashboardPage, /q\('#employeeCount'\)\.textContent=source\.employeeCount/);
-});
-
-test("weekly report UI remains off", () => {
-  assert.doesNotMatch(dashboardPage, /data-report=/);
-  assert.doesNotMatch(dashboardPage, /reportModal/);
-  assert.doesNotMatch(dashboardPage, />レポート<\/button>/);
+test("dashboard is responsive and keyboard-oriented", () => {
+  assert.match(dashboardPage, /aria-current/);
+  assert.match(dashboardPage, /aria-live="polite"/);
+  assert.match(dashboardPage, /scope="col"/);
+  assert.match(dashboardPage, /mobile-menu/);
+  assert.match(dashboardPage, /focus-visible/);
 });

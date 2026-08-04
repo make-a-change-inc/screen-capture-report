@@ -95,4 +95,30 @@ CREATE TABLE IF NOT EXISTS company_reports (
 
 CREATE INDEX IF NOT EXISTS idx_company_devices_company ON company_devices(company_id);
 CREATE INDEX IF NOT EXISTS idx_company_reports_company ON company_reports(company_id);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token_hash TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id),
+  email TEXT NOT NULL,
+  csrf_token TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_login_attempts (
+  attempt_key TEXT PRIMARY KEY,
+  attempt_count INTEGER NOT NULL,
+  window_started_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS company_settings (
+  company_id TEXT PRIMARY KEY REFERENCES companies(id),
+  timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo',
+  week_start INTEGER NOT NULL DEFAULT 1,
+  report_retention_days INTEGER NOT NULL DEFAULT 90,
+  audit_retention_days INTEGER NOT NULL DEFAULT 365,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_occurred ON audit_events(occurred_at DESC);
 `;

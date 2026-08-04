@@ -22,6 +22,7 @@ test("management report completes the admin API round trip", async (t) => {
       ADMIN_EMAIL: adminEmail,
       ADMIN_PASSWORD_HASH: digest(adminPassword),
       REPORT_ENCRYPTION_KEY_V1: randomBytes(32).toString("base64"),
+      ALLOW_SELF_REGISTRATION: "true",
     },
   });
   t.after(() => mf.dispose());
@@ -123,9 +124,16 @@ test("management report completes the admin API round trip", async (t) => {
   });
   assert.equal(unfinalized.status, 422);
 
-  const summary = await fetch("/api/admin/summary", {
-    headers: adminHeaders,
-  });
+  const login = await fetch("/api/auth/login", { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ companyCode, email: adminEmail, password: adminPassword }) });
+  assert.equal(login.status, 200);
+  const loginBody = await login.json();
+  const sessionCookie = login.headers.get("set-cookie").split(";")[0];
+  const sessionHeaders = { cookie: sessionCookie };
+  const mutationHeaders = { ...sessionHeaders, "x-csrf-token": loginBody.csrfToken };
+
+  const summary = await fetch("/api/admin/summary", { headers: sessionHeaders });
   assert.equal(summary.status, 200);
   const dashboard = await summary.json();
   assert.equal(dashboard.company.name, "株式会社ライトアップ");
@@ -133,7 +141,7 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(dashboard.reports.length, 1);
   assert.equal(dashboard.reports[0].display_name, "山田 花子");
 
-  const live = await fetch("/api/dashboard/summary", { headers: adminHeaders });
+  const live = await fetch("/api/dashboard/summary", { headers: sessionHeaders });
   assert.equal(live.status, 200);
   const liveDashboard = await live.json();
   assert.equal(liveDashboard.employeeCount, 2);
@@ -146,19 +154,49 @@ test("management report completes the admin API round trip", async (t) => {
   assert.deepEqual(liveDashboard.rows.map((item) => item.minutes), [720, 480]);
 
   const content = await fetch(`/api/admin/reports/${report.report_id}/content`, {
-    headers: adminHeaders,
+    headers: sessionHeaders,
   });
   assert.equal(content.status, 200);
   const decrypted = await content.json();
   assert.equal(decrypted.html, report.report_html);
   assert.equal(decrypted.sha256, digest(report.report_html));
 
-  const otherHeaders = { ...adminHeaders, "x-company-code": "company-code-beta" };
-  const otherBootstrap = await fetch("/api/admin/summary", { headers: otherHeaders });
+  const betaRegistration = await fetch("/api/v1/device/register", { method: "POST",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode: "company-code-beta",
+      employeeId: "beta-employee", department: "営業", deviceName: "BETA-PC" }) });
+  assert.equal(betaRegistration.status, 201);
+  const betaLogin = await fetch("/api/auth/login", { method: "POST",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode: "company-code-beta",
+      email: adminEmail, password: adminPassword }) });
+  assert.equal(betaLogin.status, 200);
+  const betaHeaders = { cookie: betaLogin.headers.get("set-cookie").split(";")[0] };
+  const otherBootstrap = await fetch("/api/admin/summary", { headers: betaHeaders });
   assert.equal(otherBootstrap.status, 200);
   assert.equal((await otherBootstrap.json()).reports.length, 0);
   const crossTenantContent = await fetch(`/api/admin/reports/${report.report_id}/content`, {
-    headers: otherHeaders,
+    headers: betaHeaders,
   });
   assert.equal(crossTenantContent.status, 404);
+
+  const badCsrf = await fetch("/api/admin/settings", { method: "PATCH", headers: {
+    ...sessionHeaders, "content-type": "application/json" }, body: JSON.stringify({ timezone: "Asia/Tokyo",
+      weekStart: 1, reportRetentionDays: 90, auditRetentionDays: 365 }) });
+  assert.equal(badCsrf.status, 403);
+
+  const settings = await fetch("/api/admin/settings", { method: "PATCH", headers: {
+    ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({ timezone: "Asia/Tokyo",
+      weekStart: 1, reportRetentionDays: 120, auditRetentionDays: 400 }) });
+  assert.equal(settings.status, 200);
+
+  const loggedOut = await fetch("/api/auth/logout", { method: "POST", headers: sessionHeaders });
+  assert.equal(loggedOut.status, 200);
+  assert.equal((await fetch("/api/dashboard/summary", { headers: sessionHeaders })).status, 401);
+
+  const failedStatuses = [];
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    failedStatuses.push((await fetch("/api/auth/login", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode,
+        email: "rate-limit@example.test", password: "wrong-password" }) })).status);
+  }
+  assert.deepEqual(failedStatuses, [401, 401, 401, 401, 401, 429]);
 });
