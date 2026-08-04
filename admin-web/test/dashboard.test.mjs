@@ -58,7 +58,8 @@ test("dashboard loads live D1 data and handles incomplete states", () => {
   assert.match(dashboardPage, /aria-busy/);
   assert.match(dashboardPage, /検索条件に一致/);
   assert.match(dashboardPage, /データを取得できませんでした/);
-  assert.match(dashboardPage, /取得予定数・分析成功率・停止理由は現行端末データに含まれない/);
+  assert.match(dashboardPage, /匿名運用集計はまだ届いていません/);
+  assert.match(dashboardPage, /生画像、ウィンドウタイトル、URL、詳細作業ログは送信しません/);
   assert.doesNotMatch(dashboardPage, /134\.3|169\.3/);
 });
 

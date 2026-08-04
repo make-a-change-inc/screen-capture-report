@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from src.config import SecretBackend, Settings
+from src.metrics import daily_operational_metrics
 from src.storage import MANAGEMENT_REPORT_ACCESS, Database
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,31 @@ class ManagementReportClient:
             return UploadResult(False, "network_error")
         except Exception as exc:
             logger.error("Management report upload failed: %s", type(exc).__name__)
+            return UploadResult(False, type(exc).__name__)
+
+    def heartbeat(
+        self, api_url: str, token: str, payload: dict[str, Any], *, sites_bypass_token: str = "",
+    ) -> UploadResult:
+        endpoint = api_url.rstrip("/") + "/api/v1/device/heartbeat"
+        parsed = urlparse(endpoint)
+        if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"}:
+            return UploadResult(False, "insecure_admin_api_url")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8",
+                   "User-Agent": "ScreenCaptureReport/0.4"}
+        if sites_bypass_token:
+            headers["OAI-Sites-Authorization"] = f"Bearer {sites_bypass_token}"
+        request = urllib.request.Request(endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                return UploadResult(200 <= response.status < 300,
+                                    None if 200 <= response.status < 300 else f"http_{response.status}")
+        except urllib.error.HTTPError as exc:
+            return UploadResult(False, f"http_{exc.code}")
+        except urllib.error.URLError:
+            return UploadResult(False, "network_error")
+        except Exception as exc:
+            logger.error("Device heartbeat failed: %s", type(exc).__name__)
             return UploadResult(False, type(exc).__name__)
 
     def register(
@@ -160,6 +186,31 @@ class ManagementReportSync:
         token = self._device_token(settings)
         if not token:
             return 0
+
+        metrics = daily_operational_metrics(self.database, datetime.now().astimezone().date(), settings)
+        capture = metrics["capture"]
+        counts = capture.get("counts", {})
+        heartbeat_payload = {
+            "metric_date": metrics["day"],
+            "app_version": "0.4",
+            "collection_state": "paused" if settings.capture_paused else "active",
+            "scheduled_count": capture["scheduled_intervals"],
+            "eligible_count": capture["eligible"],
+            "captured_count": capture["successful"],
+            "failed_count": capture["failed"],
+            "missing_count": capture["missing_intervals"],
+            "analyzed_count": int(counts.get("analyzed", 0)),
+            "analysis_failed_count": int(counts.get("analysis_failed", 0)),
+            "pause_reasons": {key: int(value) for key, value in counts.items()
+                              if key in {"paused", "locked", "idle", "excluded", "consent_required"}},
+        }
+        heartbeat = getattr(self.client, "heartbeat", None)
+        if heartbeat is not None:
+            result = heartbeat(settings.admin_api_url, token, heartbeat_payload,
+                sites_bypass_token=self.secrets.get("admin_sites_bypass_token") or "")
+            if result.error_code == "http_401":
+                self.secrets.delete("admin_upload_token")
+                return 0
 
         reports = {
             item["id"]: item

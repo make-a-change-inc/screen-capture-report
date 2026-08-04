@@ -143,6 +143,16 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS consent_events (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
     employee_id TEXT, status TEXT NOT NULL, source TEXT NOT NULL, occurred_at TEXT NOT NULL,
     recorded_by TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS device_heartbeats (device_id TEXT NOT NULL, company_id TEXT NOT NULL,
+    metric_date TEXT NOT NULL, app_version TEXT, collection_state TEXT NOT NULL,
+    scheduled_count INTEGER NOT NULL, eligible_count INTEGER NOT NULL, captured_count INTEGER NOT NULL,
+    failed_count INTEGER NOT NULL, missing_count INTEGER NOT NULL, analyzed_count INTEGER NOT NULL,
+    analysis_failed_count INTEGER NOT NULL, pause_reasons_json TEXT NOT NULL DEFAULT '{}',
+    policy_version INTEGER, received_at TEXT NOT NULL, PRIMARY KEY(device_id, metric_date))`,
+  `CREATE TABLE IF NOT EXISTS collection_policies (company_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+    collection_enabled INTEGER NOT NULL DEFAULT 1, excluded_apps_json TEXT NOT NULL DEFAULT '[]',
+    excluded_url_patterns_json TEXT NOT NULL DEFAULT '[]', excluded_time_ranges_json TEXT NOT NULL DEFAULT '[]',
+    purpose_text TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 ];
 
 async function ensureSchema(env) {
@@ -585,9 +595,100 @@ function normalizeCategories(value) {
   });
 }
 
+function boundedCount(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 && number <= 1000000 ? number : null;
+}
+
+async function receiveHeartbeat(request, env) {
+  const device = await requireDevice(request, env);
+  if (!device) return json({ error: "invalid_device_token" }, 401);
+  const body = await request.json();
+  const metricDate = String(body.metric_date || body.metricDate || "");
+  const state = String(body.collection_state || body.collectionState || "");
+  const allowedStates = ["active", "paused", "offline", "error", "disabled"];
+  const fields = ["scheduled_count", "eligible_count", "captured_count", "failed_count",
+    "missing_count", "analyzed_count", "analysis_failed_count"];
+  const counts = Object.fromEntries(fields.map((key) => [key,
+    boundedCount(body[key] ?? body[key.replace(/_([a-z])/g, (_m, c) => c.toUpperCase())])]));
+  const pauseReasons = body.pause_reasons ?? body.pauseReasons ?? {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(metricDate) || !allowedStates.includes(state)
+    || Object.values(counts).some((value) => value === null)
+    || !pauseReasons || Array.isArray(pauseReasons) || typeof pauseReasons !== "object"
+    || Object.keys(pauseReasons).length > 20
+    || Object.values(pauseReasons).some((value) => boundedCount(value) === null)) {
+    return json({ error: "invalid_heartbeat" }, 400);
+  }
+  const appVersion = String(body.app_version || body.appVersion || "").slice(0, 64) || null;
+  const policyVersion = body.policy_version == null && body.policyVersion == null ? null
+    : boundedCount(body.policy_version ?? body.policyVersion);
+  if ((body.policy_version != null || body.policyVersion != null) && policyVersion === null) {
+    return json({ error: "invalid_policy_version" }, 400);
+  }
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO device_heartbeats VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(device_id, metric_date) DO UPDATE SET app_version=excluded.app_version,
+      collection_state=excluded.collection_state, scheduled_count=excluded.scheduled_count,
+      eligible_count=excluded.eligible_count, captured_count=excluded.captured_count,
+      failed_count=excluded.failed_count, missing_count=excluded.missing_count,
+      analyzed_count=excluded.analyzed_count, analysis_failed_count=excluded.analysis_failed_count,
+      pause_reasons_json=excluded.pause_reasons_json, policy_version=excluded.policy_version,
+      received_at=excluded.received_at`).bind(device.id, device.company_id, metricDate, appVersion, state,
+      counts.scheduled_count, counts.eligible_count, counts.captured_count, counts.failed_count,
+      counts.missing_count, counts.analyzed_count, counts.analysis_failed_count,
+      JSON.stringify(pauseReasons), policyVersion, now),
+    env.DB.prepare("UPDATE devices SET last_seen_at=?, app_version=COALESCE(?,app_version) WHERE id=?")
+      .bind(now, appVersion, device.id),
+  ]);
+  return json({ ok: true, receivedAt: now });
+}
+
+async function devicePolicy(request, env) {
+  const device = await requireDevice(request, env);
+  if (!device) return json({ error: "invalid_device_token" }, 401);
+  const policy = await env.DB.prepare("SELECT * FROM collection_policies WHERE company_id=?")
+    .bind(device.company_id).first();
+  return json(policy ? { version: Number(policy.version), collectionEnabled: Boolean(policy.collection_enabled),
+    excludedApps: JSON.parse(policy.excluded_apps_json),
+    excludedUrlPatterns: JSON.parse(policy.excluded_url_patterns_json),
+    excludedTimeRanges: JSON.parse(policy.excluded_time_ranges_json), purposeText: policy.purpose_text,
+    updatedAt: policy.updated_at } : { version: 0, collectionEnabled: true, excludedApps: [],
+    excludedUrlPatterns: [], excludedTimeRanges: [], purposeText: "", updatedAt: null });
+}
+
+async function updateCollectionPolicy(request, env, company) {
+  const body = await request.json();
+  const arrays = [body.excludedApps, body.excludedUrlPatterns, body.excludedTimeRanges];
+  if (typeof body.collectionEnabled !== "boolean" || arrays.some((items) => !Array.isArray(items)
+    || items.length > 100 || items.some((item) => typeof item !== "string" || item.length > 256))) {
+    return json({ error: "invalid_policy" }, 400);
+  }
+  const purposeText = String(body.purposeText || "").trim();
+  if (purposeText.length > 2000) return json({ error: "invalid_policy" }, 400);
+  const current = await env.DB.prepare("SELECT version FROM collection_policies WHERE company_id=?")
+    .bind(company.id).first();
+  const version = Number(current?.version || 0) + 1;
+  const now = new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO collection_policies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(company_id) DO UPDATE SET version=excluded.version,
+    collection_enabled=excluded.collection_enabled, excluded_apps_json=excluded.excluded_apps_json,
+    excluded_url_patterns_json=excluded.excluded_url_patterns_json,
+    excluded_time_ranges_json=excluded.excluded_time_ranges_json, purpose_text=excluded.purpose_text,
+    updated_by=excluded.updated_by, updated_at=excluded.updated_at`)
+    .bind(company.id, version, Number(body.collectionEnabled), JSON.stringify(body.excludedApps),
+      JSON.stringify(body.excludedUrlPatterns), JSON.stringify(body.excludedTimeRanges), purposeText,
+      company.email, now).run();
+  await audit(env, "admin", company.email, "collection_policy.updated", "company", company.id,
+    { version, collectionEnabled: body.collectionEnabled, excludedAppCount: body.excludedApps.length,
+      excludedUrlCount: body.excludedUrlPatterns.length, excludedTimeRangeCount: body.excludedTimeRanges.length });
+  return json({ ok: true, version });
+}
+
 async function dashboardSummary(env, company) {
   const [employees, deviceSummary, deviceRows, reports, reportVersions, auditRows, settings,
-    opportunityStates, classificationRules, privacyRequests, consentEvents] = await Promise.all([
+    opportunityStates, classificationRules, privacyRequests, consentEvents, deviceHeartbeats,
+    collectionPolicy] = await Promise.all([
     env.DB.prepare(
       `SELECT e.id, e.display_name, e.department, MAX(d.last_seen_at) AS last_seen_at
        FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
@@ -641,6 +742,11 @@ async function dashboardSummary(env, company) {
       .bind(company.id).all(),
     env.DB.prepare("SELECT * FROM consent_events WHERE company_id=? ORDER BY occurred_at DESC LIMIT 200")
       .bind(company.id).all(),
+    env.DB.prepare(`SELECT h.*, d.name AS device_name, e.display_name, e.department
+      FROM device_heartbeats h JOIN devices d ON d.id=h.device_id
+      JOIN employees e ON e.id=d.employee_id WHERE h.company_id=?
+      ORDER BY h.metric_date DESC, h.received_at DESC LIMIT 1000`).bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM collection_policies WHERE company_id=?").bind(company.id).first(),
   ]);
   const rows = [];
   let fallbackCount = 0;
@@ -680,6 +786,16 @@ async function dashboardSummary(env, company) {
     classificationRules: classificationRules.results,
     privacyRequests: privacyRequests.results,
     consentEvents: consentEvents.results,
+    deviceHeartbeats: deviceHeartbeats.results.map((item) => ({ ...item,
+      pause_reasons: JSON.parse(item.pause_reasons_json || "{}"), pause_reasons_json: undefined })),
+    collectionPolicy: collectionPolicy ? { version: Number(collectionPolicy.version),
+      collectionEnabled: Boolean(collectionPolicy.collection_enabled),
+      excludedApps: JSON.parse(collectionPolicy.excluded_apps_json),
+      excludedUrlPatterns: JSON.parse(collectionPolicy.excluded_url_patterns_json),
+      excludedTimeRanges: JSON.parse(collectionPolicy.excluded_time_ranges_json),
+      purposeText: collectionPolicy.purpose_text, updatedAt: collectionPolicy.updated_at } :
+      { version: 0, collectionEnabled: true, excludedApps: [], excludedUrlPatterns: [],
+        excludedTimeRanges: [], purposeText: "", updatedAt: null },
     rows,
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
       reportsParsedFromEncryptedContent: fallbackCount,
@@ -960,6 +1076,10 @@ async function adminApi(request, env, pathname) {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
     return recordConsent(request, env, company);
   }
+  if (request.method === "PUT" && pathname === "/api/admin/collection-policy") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return updateCollectionPolicy(request, env, company);
+  }
   const contentMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/content$/);
   if (request.method === "GET" && contentMatch) return reportContent(env, company, contentMatch[1]);
   return json({ error: "not_found" }, 404);
@@ -1007,6 +1127,14 @@ export default {
       ) {
         await ensureSchema(env);
         return uploadReport(request, env);
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/device/heartbeat") {
+        await ensureSchema(env);
+        return receiveHeartbeat(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/device/policy") {
+        await ensureSchema(env);
+        return devicePolicy(request, env);
       }
       if (url.pathname === "/api/health") return json({ ok: true, database: Boolean(env.DB) });
       if (request.method === "GET" && url.pathname === "/api/dashboard/summary") {
