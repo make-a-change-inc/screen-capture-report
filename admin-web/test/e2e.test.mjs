@@ -409,6 +409,43 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal((await fetch("/api/admin/mfa/confirm", { method: "POST", headers: {
     ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({
       otp: totp(mfaSecret) }) })).status, 200);
+  const tenantExport = await fetch("/api/admin/tenant-export", { headers: sessionHeaders });
+  assert.equal(tenantExport.status, 200);
+  const tenantData = await tenantExport.json();
+  assert.equal(tenantData.reports.length, 1);
+  assert.equal(tenantData.reports[0].html, reportV2.report_html);
+  assert.equal(Object.hasOwn(tenantData.administrators[0], "password_hash"), false);
+  assert.equal((await fetch("/api/admin/tenant-export", { headers: managerHeaders })).status, 403);
+
+  const managerNewPassword = "manager-new-password-2026";
+  assert.equal((await fetch("/api/admin/password", { method: "PATCH", headers: managerHeaders,
+    body: JSON.stringify({ currentPassword: managerPassword, newPassword: managerNewPassword }) })).status, 200);
+  assert.equal((await fetch("/api/auth/login", { method: "POST", headers: {
+    "content-type": "application/json" }, body: JSON.stringify({ companyCode,
+      email: "manager@example.test", password: managerPassword }) })).status, 401);
+  assert.equal((await fetch("/api/auth/login", { method: "POST", headers: {
+    "content-type": "application/json" }, body: JSON.stringify({ companyCode,
+      email: "manager@example.test", password: managerNewPassword }) })).status, 200);
+
+  const tenantDeletion = await fetch("/api/admin/privacy-requests", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({
+      requestType: "deletion", targetType: "company", targetId: liveDashboard.company.id,
+      subject: "all tenant data", reason: "test tenant deletion" }) });
+  assert.equal(tenantDeletion.status, 201);
+  const tenantDeletionId = (await tenantDeletion.json()).id;
+  assert.equal((await fetch(`/api/admin/privacy-requests/${tenantDeletionId}`, { method: "PATCH",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "processing" }) })).status, 200);
+  const tenantDeleted = await fetch(`/api/admin/privacy-requests/${tenantDeletionId}/execute-deletion`, {
+    method: "POST", headers: mutationHeaders });
+  assert.equal(tenantDeleted.status, 200);
+  const tenantDeletedBody = await tenantDeleted.json();
+  assert.equal(tenantDeletedBody.employeesDeleted, 1);
+  assert.equal(tenantDeletedBody.reportsDeleted, 1);
+  const emptiedTenant = await (await fetch("/api/dashboard/summary", { headers: sessionHeaders })).json();
+  assert.equal(emptiedTenant.employeeCount, 0);
+  assert.equal(emptiedTenant.reportCount, 0);
+  assert.equal(emptiedTenant.adminUsers.length, 3);
 
   const loggedOut = await fetch("/api/auth/logout", { method: "POST", headers: sessionHeaders });
   assert.equal(loggedOut.status, 200);

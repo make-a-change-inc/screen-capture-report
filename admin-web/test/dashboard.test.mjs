@@ -87,6 +87,15 @@ test("report PDF and delivery controls expose honest integration state", () => {
   assert.match(dashboardPage, /Cloudflare側未接続/);
 });
 
+test("tenant export, tenant deletion, and password rotation are exposed", () => {
+  assert.match(dashboardPage, /passwordForm/);
+  assert.match(dashboardPage, /\/api\/admin\/password/);
+  assert.match(dashboardPage, /tenantExport/);
+  assert.match(dashboardPage, /\/api\/admin\/tenant-export/);
+  assert.match(dashboardPage, /tenantDeleteRequest/);
+  assert.match(dashboardPage, /targetType:'company'/);
+});
+
 test("dashboard loads live D1 data and handles incomplete states", () => {
   assert.match(dashboardPage, /api\('\/api\/dashboard\/summary'/);
   assert.match(dashboardPage, /aria-busy/);
