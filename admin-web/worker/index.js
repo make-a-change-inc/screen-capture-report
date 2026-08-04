@@ -28,6 +28,21 @@ const bytesToBase64 = (value) => {
   return btoa(binary);
 };
 
+const randomToken = (size = 32) => bytesToBase64(crypto.getRandomValues(new Uint8Array(size)))
+  .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+
+const cookieValue = (request, name) => {
+  const cookies = request.headers.get("cookie") || "";
+  for (const item of cookies.split(";")) {
+    const [key, ...value] = item.trim().split("=");
+    if (key === name) return decodeURIComponent(value.join("="));
+  }
+  return "";
+};
+
+const sessionCookie = (token, maxAge = 28800) =>
+  `scr_admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
+
 async function sha256(value) {
   return hex(await crypto.subtle.digest("SHA-256", typeof value === "string" ? enc.encode(value) : value));
 }
@@ -99,6 +114,14 @@ const schemaStatements = [
     device_id TEXT NOT NULL UNIQUE)`,
   `CREATE TABLE IF NOT EXISTS company_reports (company_id TEXT NOT NULL,
     report_id TEXT NOT NULL UNIQUE)`,
+  `CREATE TABLE IF NOT EXISTS admin_sessions (token_hash TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    email TEXT NOT NULL, csrf_token TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS admin_login_attempts (attempt_key TEXT PRIMARY KEY, attempt_count INTEGER NOT NULL,
+    window_started_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS company_settings (company_id TEXT PRIMARY KEY, timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo',
+    week_start INTEGER NOT NULL DEFAULT 1, report_retention_days INTEGER NOT NULL DEFAULT 90,
+    audit_retention_days INTEGER NOT NULL DEFAULT 365, updated_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_events_occurred ON audit_events(occurred_at DESC)`,
 ];
 
 async function ensureSchema(env) {
@@ -171,14 +194,72 @@ async function bootstrapCompany(env, companyCode, migrateLegacy = true, requeste
 }
 
 async function requireAdmin(request, env) {
-  const companyCode = request.headers.get("x-company-code") || "";
-  const email = (request.headers.get("x-admin-email") || "").trim().toLowerCase();
-  const password = request.headers.get("x-admin-password") || "";
+  const token = cookieValue(request, "scr_admin_session");
+  if (!token) return null;
+  const session = await env.DB.prepare(
+    `SELECT s.company_id, s.email, s.csrf_token, s.expires_at, c.name
+     FROM admin_sessions s JOIN companies c ON c.id=s.company_id
+     WHERE s.token_hash=? AND s.expires_at>? AND c.status='active'`,
+  ).bind(await sha256(token), new Date().toISOString()).first();
+  return session ? { id: session.company_id, name: session.name, email: session.email,
+    csrfToken: session.csrf_token, sessionToken: token } : null;
+}
+
+async function login(request, env) {
+  const body = await request.json();
+  const companyCode = String(body.companyCode || "");
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
   const expectedEmail = (env.ADMIN_EMAIL || "admin@screen-capture-report.local").trim().toLowerCase();
   const expectedPasswordHash = env.ADMIN_PASSWORD_HASH || env.BOOTSTRAP_ADMIN_HASH || "";
-  if (email !== expectedEmail || !(await timingSafeMatch(password, expectedPasswordHash))) return null;
-  return bootstrapCompany(env, companyCode);
+  const attemptKey = await sha256(`${request.headers.get("cf-connecting-ip") || "local"}|${email}`);
+  const attempt = await env.DB.prepare(
+    "SELECT attempt_count, window_started_at FROM admin_login_attempts WHERE attempt_key=?",
+  ).bind(attemptKey).first();
+  const now = new Date();
+  const windowActive = attempt && now.getTime() - Date.parse(attempt.window_started_at) < 15 * 60 * 1000;
+  if (windowActive && Number(attempt.attempt_count) >= 5) return json({ error: "login_rate_limited" }, 429);
+  const company = await companyByCode(env, companyCode);
+  if (!company || email !== expectedEmail || !(await timingSafeMatch(password, expectedPasswordHash))) {
+    await env.DB.prepare(
+      `INSERT INTO admin_login_attempts VALUES (?, 1, ?)
+       ON CONFLICT(attempt_key) DO UPDATE SET
+       attempt_count=CASE WHEN window_started_at<? THEN 1 ELSE attempt_count+1 END,
+       window_started_at=CASE WHEN window_started_at<? THEN excluded.window_started_at ELSE window_started_at END`,
+    ).bind(attemptKey, now.toISOString(), new Date(now.getTime() - 15 * 60 * 1000).toISOString(),
+      new Date(now.getTime() - 15 * 60 * 1000).toISOString()).run();
+    return json({ error: "invalid_credentials" }, 401);
+  }
+  const token = randomToken();
+  const csrfToken = randomToken(24);
+  const expiresAt = new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at<=?").bind(now.toISOString()),
+    env.DB.prepare("DELETE FROM admin_login_attempts WHERE attempt_key=?").bind(attemptKey),
+    env.DB.prepare(
+      "INSERT INTO admin_sessions VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind(await sha256(token), company.id, email, csrfToken, now.toISOString(), expiresAt),
+  ]);
+  await audit(env, "admin", email, "session.login", "company", company.id);
+  return json({ company: { id: company.id, name: company.name }, email, csrfToken, expiresAt }, 200,
+    { "set-cookie": sessionCookie(token) });
 }
+
+async function logout(request, env) {
+  const company = await requireAdmin(request, env);
+  if (company) {
+    await env.DB.prepare("DELETE FROM admin_sessions WHERE token_hash=?")
+      .bind(await sha256(company.sessionToken)).run();
+    await audit(env, "admin", company.email, "session.logout", "company", company.id);
+  }
+  return json({ ok: true }, 200, { "set-cookie": sessionCookie("", 0) });
+}
+
+const validCsrf = (request, company) => {
+  const origin = request.headers.get("origin");
+  return request.headers.get("x-csrf-token") === company.csrfToken
+    && (!origin || origin === new URL(request.url).origin);
+};
 
 async function requireDevice(request, env) {
   const authorization = request.headers.get("authorization") || "";
@@ -239,6 +320,9 @@ async function createDevice(request, env) {
 }
 
 async function registerDevice(request, env) {
+  if (env.ALLOW_SELF_REGISTRATION !== "true") {
+    return json({ error: "self_registration_disabled" }, 403);
+  }
   const body = await request.json();
   const company = await bootstrapCompany(
     env, String(body.companyCode || request.headers.get("x-company-code") || ""), false,
@@ -402,8 +486,10 @@ async function listSummary(env, company) {
       `SELECT e.id, e.display_name, e.department, e.status, MAX(d.last_seen_at) AS last_seen_at,
        COUNT(DISTINCT d.id) AS device_count, MAX(r.period_start) AS latest_period
        FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
-       LEFT JOIN devices d ON d.employee_id=e.id
-       LEFT JOIN reports r ON r.employee_id=e.id
+       LEFT JOIN company_devices cd ON cd.company_id=ce.company_id
+       LEFT JOIN devices d ON d.id=cd.device_id AND d.employee_id=e.id
+       LEFT JOIN company_reports cr ON cr.company_id=ce.company_id
+       LEFT JOIN reports r ON r.id=cr.report_id AND r.employee_id=e.id
        WHERE ce.company_id=? GROUP BY e.id ORDER BY e.display_name`,
     ).bind(company.id).all(),
     env.DB.prepare(
@@ -464,7 +550,7 @@ function normalizeCategories(value) {
 }
 
 async function dashboardSummary(env, company) {
-  const [employees, devices, reports] = await Promise.all([
+  const [employees, deviceSummary, deviceRows, reports, auditRows, settings] = await Promise.all([
     env.DB.prepare(
       `SELECT e.id, e.display_name, e.department, MAX(d.last_seen_at) AS last_seen_at
        FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
@@ -478,13 +564,31 @@ async function dashboardSummary(env, company) {
        JOIN devices d ON d.id=cd.device_id WHERE cd.company_id=? AND d.status='active'`,
     ).bind(company.id).first(),
     env.DB.prepare(
-      `SELECT r.id, r.employee_id, r.period_start, r.period_end, r.received_at, e.department,
-       r.content_cipher, r.content_nonce, m.categories_json
+      `SELECT d.id, d.name, d.status, d.app_version, d.last_seen_at, d.created_at,
+       e.id AS employee_id, e.display_name, e.department
+       FROM company_devices cd JOIN devices d ON d.id=cd.device_id
+       JOIN employees e ON e.id=d.employee_id WHERE cd.company_id=?
+       ORDER BY COALESCE(d.last_seen_at, d.created_at) DESC`,
+    ).bind(company.id).all(),
+    env.DB.prepare(
+      `SELECT r.id, r.employee_id, r.period_start, r.period_end, r.revision, r.generated_at,
+       r.received_at, e.display_name, e.department, r.content_sha256,
+       r.content_cipher, r.content_nonce, m.active_minutes, m.idle_minutes,
+       m.capture_count, m.work_log_count, m.categories_json
        FROM company_reports cr JOIN reports r ON r.id=cr.report_id
        JOIN employees e ON e.id=r.employee_id
        LEFT JOIN report_metrics m ON m.report_id=r.id
        WHERE cr.company_id=? AND e.status='active' ORDER BY r.period_start DESC LIMIT 200`,
     ).bind(company.id).all(),
+    env.DB.prepare(
+      `SELECT id, actor_type, actor_id, action, target_type, target_id, occurred_at, metadata_json
+       FROM audit_events WHERE
+       (target_type='company' AND target_id=?) OR
+       (target_type='report' AND target_id IN (SELECT report_id FROM company_reports WHERE company_id=?)) OR
+       (target_type='device' AND target_id IN (SELECT device_id FROM company_devices WHERE company_id=?))
+       ORDER BY occurred_at DESC LIMIT 200`,
+    ).bind(company.id, company.id, company.id).all(),
+    env.DB.prepare("SELECT * FROM company_settings WHERE company_id=?").bind(company.id).first(),
   ]);
   const rows = [];
   let fallbackCount = 0;
@@ -509,8 +613,16 @@ async function dashboardSummary(env, company) {
     refreshedAt: new Date().toISOString(),
     latestReceivedAt: reports.results[0]?.received_at || null,
     employeeCount: employees.results.length, employees: employees.results,
-    deviceCount: Number(devices?.count || 0),
-    reportCount: reports.results.length, latestDeviceSyncAt: devices?.last_seen_at || null,
+    devices: deviceRows.results, deviceCount: Number(deviceSummary?.count || 0),
+    reportCount: reports.results.length, latestDeviceSyncAt: deviceSummary?.last_seen_at || null,
+    reports: reports.results.map(({ content_cipher, content_nonce, categories_json, ...report }) => ({
+      ...report, categories: normalizeCategories(JSON.parse(categories_json || "[]")), revision: Number(report.revision || 1),
+    })),
+    auditEvents: auditRows.results.map((item) => ({ ...item,
+      metadata: JSON.parse(item.metadata_json || "{}"), metadata_json: undefined })),
+    settings: settings || { timezone: "Asia/Tokyo", week_start: 1,
+      report_retention_days: 90, audit_retention_days: 365 },
+    admin: { email: company.email },
     rows,
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
       reportsParsedFromEncryptedContent: fallbackCount,
@@ -525,28 +637,46 @@ async function reportContent(env, company, reportId) {
   ).bind(reportId, company.id).first();
   if (!report) return json({ error: "not_found" }, 404);
   const html = await decryptReport(env, report.content_cipher, report.content_nonce);
+  await audit(env, "admin", company.email, "report.viewed", "report", reportId);
   const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
   return json({ html, sha256: report.content_sha256, csp });
 }
 
 async function runRetention(env) {
   await ensureSchema(env);
-  const reportCutoff = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
-  const auditCutoff = new Date(Date.now() - 365 * 86400 * 1000).toISOString();
-  const expired = await env.DB.prepare(
-    "SELECT id FROM reports WHERE received_at < ? LIMIT 500",
-  ).bind(reportCutoff).all();
   const statements = [];
-  for (const row of expired.results) {
-    statements.push(env.DB.prepare("DELETE FROM report_metrics WHERE report_id=?").bind(row.id));
-    statements.push(env.DB.prepare("DELETE FROM reports WHERE id=?").bind(row.id));
-    statements.push(
-      env.DB.prepare("INSERT INTO audit_events VALUES (?, 'system', NULL, 'report.expired', 'report', ?, ?, '{}')")
-        .bind(crypto.randomUUID(), row.id, new Date().toISOString()),
-    );
+  const companies = await env.DB.prepare(
+    `SELECT c.id, COALESCE(s.report_retention_days,90) AS report_days,
+     COALESCE(s.audit_retention_days,365) AS audit_days FROM companies c
+     LEFT JOIN company_settings s ON s.company_id=c.id`,
+  ).all();
+  for (const company of companies.results) {
+    const reportCutoff = new Date(Date.now() - Number(company.report_days) * 86400 * 1000).toISOString();
+    const auditCutoff = new Date(Date.now() - Number(company.audit_days) * 86400 * 1000).toISOString();
+    const expired = await env.DB.prepare(
+      `SELECT r.id FROM reports r JOIN company_reports cr ON cr.report_id=r.id
+       WHERE cr.company_id=? AND r.received_at<? LIMIT 500`,
+    ).bind(company.id, reportCutoff).all();
+    statements.push(env.DB.prepare(
+      `DELETE FROM audit_events WHERE occurred_at<? AND (
+       (target_type='company' AND target_id=?) OR
+       (target_type='report' AND target_id IN (SELECT report_id FROM company_reports WHERE company_id=?)) OR
+       (target_type='device' AND target_id IN (SELECT device_id FROM company_devices WHERE company_id=?)))`,
+    ).bind(auditCutoff, company.id, company.id, company.id));
+    statements.push(env.DB.prepare(
+      `DELETE FROM idempotency_keys WHERE created_at<? AND device_id IN
+       (SELECT device_id FROM company_devices WHERE company_id=?)`,
+    ).bind(reportCutoff, company.id));
+    for (const row of expired.results) {
+      statements.push(env.DB.prepare("DELETE FROM company_reports WHERE report_id=?").bind(row.id));
+      statements.push(env.DB.prepare("DELETE FROM report_metrics WHERE report_id=?").bind(row.id));
+      statements.push(env.DB.prepare("DELETE FROM reports WHERE id=?").bind(row.id));
+      statements.push(env.DB.prepare(
+        "INSERT INTO audit_events VALUES (?, 'system', NULL, 'report.expired', 'company', ?, ?, ?)",
+      ).bind(crypto.randomUUID(), company.id, new Date().toISOString(), JSON.stringify({ reportId: row.id })));
+    }
   }
-  statements.push(env.DB.prepare("DELETE FROM idempotency_keys WHERE created_at < ?").bind(reportCutoff));
-  statements.push(env.DB.prepare("DELETE FROM audit_events WHERE occurred_at < ?").bind(auditCutoff));
+  statements.push(env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at<=?").bind(new Date().toISOString()));
   await env.DB.batch(statements);
 }
 
@@ -554,7 +684,40 @@ async function adminApi(request, env, pathname) {
   const company = await requireAdmin(request, env);
   if (!company) return json({ error: "admin_auth_required" }, 401);
   if (request.method === "GET" && pathname === "/api/admin/summary") return listSummary(env, company);
-  if (request.method === "POST" && pathname === "/api/admin/devices") return createDevice(request, env);
+  if (request.method === "POST" && pathname === "/api/admin/devices") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return createDevice(request, env);
+  }
+  if (request.method === "PATCH" && pathname === "/api/admin/settings") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    const body = await request.json();
+    const timezone = String(body.timezone || "Asia/Tokyo");
+    const weekStart = Number(body.weekStart);
+    const reportDays = Number(body.reportRetentionDays);
+    const auditDays = Number(body.auditRetentionDays);
+    if (!/^[A-Za-z_]+\/[A-Za-z_+-]+$/.test(timezone) || ![0,1].includes(weekStart)
+      || !Number.isInteger(reportDays) || reportDays < 30 || reportDays > 730
+      || !Number.isInteger(auditDays) || auditDays < 90 || auditDays > 2555) {
+      return json({ error: "invalid_settings" }, 400);
+    }
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO company_settings VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(company_id) DO UPDATE SET timezone=excluded.timezone, week_start=excluded.week_start,
+       report_retention_days=excluded.report_retention_days,
+       audit_retention_days=excluded.audit_retention_days, updated_at=excluded.updated_at`,
+    ).bind(company.id, timezone, weekStart, reportDays, auditDays, now).run();
+    await audit(env, "admin", company.email, "settings.updated", "company", company.id,
+      { timezone, weekStart, reportDays, auditDays });
+    return json({ ok: true });
+  }
+  if (request.method === "POST" && pathname === "/api/admin/audit") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    const body = await request.json();
+    if (!['analytics.exported'].includes(body.action)) return json({ error: "invalid_action" }, 400);
+    await audit(env, "admin", company.email, body.action, "company", company.id);
+    return json({ ok: true }, 201);
+  }
   const contentMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/content$/);
   if (request.method === "GET" && contentMatch) return reportContent(env, company, contentMatch[1]);
   return json({ error: "not_found" }, 404);
@@ -574,6 +737,20 @@ export default {
   async fetch(request, env) {
     try {
       const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname === "/api/auth/login") {
+        await ensureSchema(env);
+        return login(request, env);
+      }
+      if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+        await ensureSchema(env);
+        return logout(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/session") {
+        await ensureSchema(env);
+        const company = await requireAdmin(request, env);
+        return company ? json({ company: { id: company.id, name: company.name }, email: company.email,
+          csrfToken: company.csrfToken }) : json({ error: "admin_auth_required" }, 401);
+      }
       if (url.pathname.startsWith("/api/admin/")) {
         await ensureSchema(env);
         return adminApi(request, env, url.pathname);
