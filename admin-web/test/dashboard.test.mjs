@@ -64,6 +64,19 @@ test("classification correction and deletion governance are exposed", () => {
   assert.match(dashboardPage, /window\.confirm/);
 });
 
+test("multiple administrators, RBAC, MFA, and session controls are exposed", () => {
+  assert.match(dashboardPage, /adminUserForm/);
+  assert.match(dashboardPage, /mfaEnroll/);
+  assert.match(dashboardPage, /adminOtp/);
+  assert.match(dashboardPage, /\/api\/admin\/users/);
+  assert.match(dashboardPage, /revoke-sessions/);
+  assert.match(dashboardPage, /\/api\/admin\/mfa\/enroll/);
+  assert.match(dashboardPage, /\/api\/admin\/mfa\/confirm/);
+  assert.match(dashboardPage, /Owner/);
+  assert.match(dashboardPage, /Manager/);
+  assert.match(dashboardPage, /Auditor/);
+});
+
 test("dashboard loads live D1 data and handles incomplete states", () => {
   assert.match(dashboardPage, /api\('\/api\/dashboard\/summary'/);
   assert.match(dashboardPage, /aria-busy/);
