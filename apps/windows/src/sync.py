@@ -74,22 +74,36 @@ class ManagementReportClient:
             return UploadResult(False, type(exc).__name__)
 
     def heartbeat(
-        self, api_url: str, token: str, payload: dict[str, Any], *, sites_bypass_token: str = "",
+        self,
+        api_url: str,
+        token: str,
+        payload: dict[str, Any],
+        *,
+        sites_bypass_token: str = "",
     ) -> UploadResult:
         endpoint = api_url.rstrip("/") + "/api/v1/device/heartbeat"
         parsed = urlparse(endpoint)
         if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"}:
             return UploadResult(False, "insecure_admin_api_url")
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8",
-                   "User-Agent": "ScreenCaptureReport/0.4"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "ScreenCaptureReport/0.4",
+        }
         if sites_bypass_token:
             headers["OAI-Sites-Authorization"] = f"Bearer {sites_bypass_token}"
-        request = urllib.request.Request(endpoint,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return UploadResult(200 <= response.status < 300,
-                                    None if 200 <= response.status < 300 else f"http_{response.status}")
+                return UploadResult(
+                    200 <= response.status < 300,
+                    None if 200 <= response.status < 300 else f"http_{response.status}",
+                )
         except urllib.error.HTTPError as exc:
             return UploadResult(False, f"http_{exc.code}")
         except urllib.error.URLError:
@@ -99,8 +113,14 @@ class ManagementReportClient:
             return UploadResult(False, type(exc).__name__)
 
     def register(
-        self, api_url: str, company_code: str, employee_id: str, department: str,
-        device_name: str, *, sites_bypass_token: str = "",
+        self,
+        api_url: str,
+        company_code: str,
+        employee_id: str,
+        department: str,
+        device_name: str,
+        *,
+        sites_bypass_token: str = "",
     ) -> RegistrationResult:
         endpoint = api_url.rstrip("/") + "/api/v1/device/register"
         parsed = urlparse(endpoint)
@@ -112,10 +132,20 @@ class ManagementReportClient:
         }
         if sites_bypass_token:
             headers["OAI-Sites-Authorization"] = f"Bearer {sites_bypass_token}"
-        request = urllib.request.Request(endpoint, data=json.dumps({
-            "companyCode": company_code, "employeeId": employee_id,
-            "department": department, "deviceName": device_name,
-        }, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(
+                {
+                    "companyCode": company_code,
+                    "employeeId": employee_id,
+                    "department": department,
+                    "deviceName": device_name,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -161,7 +191,10 @@ class ManagementReportSync:
         if not all((company_code, employee_id, department)):
             return ""
         result = self.client.register(
-            settings.admin_api_url, company_code, employee_id, department,
+            settings.admin_api_url,
+            company_code,
+            employee_id,
+            department,
             platform.node() or "Windows PC",
             sites_bypass_token=self.secrets.get("admin_sites_bypass_token") or "",
         )
@@ -170,7 +203,7 @@ class ManagementReportSync:
             self._registration_retry_count = 0
             self._registration_next_at = None
             return result.device_token
-        delay = min(3600, 60 * (2 ** self._registration_retry_count))
+        delay = min(3600, 60 * (2**self._registration_retry_count))
         self._registration_retry_count += 1
         self._registration_next_at = now + timedelta(seconds=delay)
         return ""
@@ -187,7 +220,9 @@ class ManagementReportSync:
         if not token:
             return 0
 
-        metrics = daily_operational_metrics(self.database, datetime.now().astimezone().date(), settings)
+        metrics = daily_operational_metrics(
+            self.database, datetime.now().astimezone().date(), settings
+        )
         capture = metrics["capture"]
         counts = capture.get("counts", {})
         heartbeat_payload = {
@@ -201,13 +236,20 @@ class ManagementReportSync:
             "missing_count": capture["missing_intervals"],
             "analyzed_count": int(counts.get("analyzed", 0)),
             "analysis_failed_count": int(counts.get("analysis_failed", 0)),
-            "pause_reasons": {key: int(value) for key, value in counts.items()
-                              if key in {"paused", "locked", "idle", "excluded", "consent_required"}},
+            "pause_reasons": {
+                key: int(value)
+                for key, value in counts.items()
+                if key in {"paused", "locked", "idle", "excluded", "consent_required"}
+            },
         }
         heartbeat = getattr(self.client, "heartbeat", None)
         if heartbeat is not None:
-            result = heartbeat(settings.admin_api_url, token, heartbeat_payload,
-                sites_bypass_token=self.secrets.get("admin_sites_bypass_token") or "")
+            result = heartbeat(
+                settings.admin_api_url,
+                token,
+                heartbeat_payload,
+                sites_bypass_token=self.secrets.get("admin_sites_bypass_token") or "",
+            )
             if result.error_code == "http_401":
                 self.secrets.delete("admin_upload_token")
                 return 0
