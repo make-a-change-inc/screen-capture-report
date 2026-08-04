@@ -96,6 +96,15 @@ test("tenant export, tenant deletion, and password rotation are exposed", () => 
   assert.match(dashboardPage, /targetType:'company'/);
 });
 
+test("OIDC SSO configuration and login controls are exposed", () => {
+  assert.match(dashboardPage, /ssoLogin/);
+  assert.match(dashboardPage, /oidcForm/);
+  assert.match(dashboardPage, /\/api\/auth\/oidc\/start/);
+  assert.match(dashboardPage, /\/api\/admin\/oidc-config/);
+  assert.match(dashboardPage, /allowedDomain/);
+  assert.match(dashboardPage, /defaultRole/);
+});
+
 test("dashboard loads live D1 data and handles incomplete states", () => {
   assert.match(dashboardPage, /api\('\/api\/dashboard\/summary'/);
   assert.match(dashboardPage, /aria-busy/);

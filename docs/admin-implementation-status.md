@@ -31,7 +31,7 @@
 | 項目 | 現在の状態 | 完了に必要なもの |
 |---|---|---|
 | Cloudflare Email Service | Workerは `EMAIL` bindingと`REPORT_EMAIL_FROM`がある場合だけ送信する。未設定時は503と失敗履歴。本環境のEmail Sending照会はCloudflare API `Unauthorized (2036)`。 | Email Sending権限を持つCloudflare認証、送信ドメインのonboard、`send_email` binding、送信元アドレス |
-| SSO／IdP連携 | 画面に未接続と明示。ローカル認証＋MFAは実装済み。 | 採用IdP、issuer、client ID／secret、callback URL、グループ→role対応、組織の自動作成方針 |
+| SSO／IdP連携 | 汎用OIDC Authorization Code + PKCE、state/nonce、Discovery、JWKS署名検証、許可ドメイン、JITユーザー作成、role連携を実装。未設定企業は未接続と明示。 | 採用IdPのissuer、client ID／secret、callback URL登録、許可メールドメイン、初回role |
 
 外部設定がない状態で「配信済み」「SSO有効」と表示する実装は行わない。
 

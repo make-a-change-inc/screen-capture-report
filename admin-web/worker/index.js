@@ -28,6 +28,11 @@ const bytesToBase64 = (value) => {
   return btoa(binary);
 };
 
+const base64UrlToBytes = (value) => base64ToBytes(String(value).replaceAll("-", "+")
+  .replaceAll("_", "/").padEnd(Math.ceil(String(value).length / 4) * 4, "="));
+const bytesToBase64Url = (value) => bytesToBase64(value).replaceAll("+", "-")
+  .replaceAll("/", "_").replaceAll("=", "");
+
 const randomToken = (size = 32) => bytesToBase64(crypto.getRandomValues(new Uint8Array(size)))
   .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 
@@ -259,6 +264,13 @@ const schemaStatements = [
     channel TEXT NOT NULL, weekday INTEGER NOT NULL, hour INTEGER NOT NULL, timezone TEXT NOT NULL,
     human_review_required INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1,
     updated_by TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(company_id, channel))`,
+  `CREATE TABLE IF NOT EXISTS oidc_configs (company_id TEXT PRIMARY KEY, issuer TEXT NOT NULL,
+    client_id TEXT NOT NULL, client_secret_cipher BLOB NOT NULL, client_secret_nonce BLOB NOT NULL,
+    allowed_domain TEXT, default_role TEXT NOT NULL DEFAULT 'manager', enabled INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS oidc_transactions (state_hash TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    verifier_cipher BLOB NOT NULL, verifier_nonce BLOB NOT NULL, nonce_hash TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL, expires_at TEXT NOT NULL)`,
 ];
 
 async function ensureSchema(env) {
@@ -404,6 +416,141 @@ async function login(request, env) {
   return json({ company: { id: company.id, name: company.name }, email, role: user.role,
     csrfToken, expiresAt }, 200,
     { "set-cookie": sessionCookie(token) });
+}
+
+const safeOidcUrl = (value) => {
+  try {
+    const url = new URL(value);
+    const blocked = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[?::1)/i.test(url.hostname);
+    return url.protocol === "https:" && !url.username && !url.password && !blocked ? url : null;
+  } catch { return null; }
+};
+
+async function oidcDiscovery(issuer) {
+  const base = safeOidcUrl(issuer);
+  if (!base) throw new Error("invalid_oidc_issuer");
+  const url = new URL(`${base.pathname.replace(/\/$/, "")}/.well-known/openid-configuration`, base.origin);
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  if (!response.ok) throw new Error("oidc_discovery_failed");
+  const discovery = await response.json();
+  if (String(discovery.issuer).replace(/\/$/, "") !== String(issuer).replace(/\/$/, "")
+    || !safeOidcUrl(discovery.authorization_endpoint) || !safeOidcUrl(discovery.token_endpoint)
+    || !safeOidcUrl(discovery.jwks_uri)) throw new Error("invalid_oidc_discovery");
+  return discovery;
+}
+
+async function verifyOidcIdToken(idToken, discovery, clientId, expectedNonceHash) {
+  const parts = String(idToken || "").split(".");
+  if (parts.length !== 3) throw new Error("invalid_id_token");
+  const header = JSON.parse(dec.decode(base64UrlToBytes(parts[0])));
+  const claims = JSON.parse(dec.decode(base64UrlToBytes(parts[1])));
+  if (header.alg !== "RS256" || !header.kid) throw new Error("unsupported_id_token");
+  const jwksResponse = await fetch(discovery.jwks_uri, { headers: { accept: "application/json" } });
+  if (!jwksResponse.ok) throw new Error("jwks_fetch_failed");
+  const jwk = (await jwksResponse.json()).keys?.find((item) => item.kid === header.kid
+    && item.kty === "RSA" && (!item.use || item.use === "sig"));
+  if (!jwk) throw new Error("signing_key_not_found");
+  const key = await crypto.subtle.importKey("jwk", jwk,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+  const valid = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, base64UrlToBytes(parts[2]),
+    enc.encode(`${parts[0]}.${parts[1]}`));
+  const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const now = Math.floor(Date.now() / 1000);
+  if (!valid || claims.iss !== discovery.issuer || !audience.includes(clientId)
+    || (audience.length > 1 && claims.azp !== clientId) || Number(claims.exp) <= now
+    || Number(claims.iat || 0) > now + 60 || await sha256(String(claims.nonce || "")) !== expectedNonceHash
+    || !claims.sub || !claims.email || claims.email_verified === false) throw new Error("invalid_id_token_claims");
+  return claims;
+}
+
+async function configureOidc(request, env, company) {
+  const body = await request.json(), issuer = String(body.issuer || "").trim().replace(/\/$/, "");
+  const clientId = String(body.clientId || "").trim().slice(0, 512);
+  const clientSecret = String(body.clientSecret || "").trim();
+  const allowedDomain = String(body.allowedDomain || "").trim().toLowerCase().replace(/^@/, "");
+  const defaultRole = String(body.defaultRole || "manager"), enabled = body.enabled !== false;
+  if (!safeOidcUrl(issuer) || !clientId || !clientSecret || clientSecret.length > 2048
+    || (allowedDomain && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(allowedDomain))
+    || !["manager", "auditor"].includes(defaultRole)) return json({ error: "invalid_oidc_config" }, 400);
+  await oidcDiscovery(issuer);
+  const encrypted = await encryptSecret(env, clientSecret), now = new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO oidc_configs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(company_id) DO UPDATE SET issuer=excluded.issuer,client_id=excluded.client_id,
+    client_secret_cipher=excluded.client_secret_cipher,client_secret_nonce=excluded.client_secret_nonce,
+    allowed_domain=excluded.allowed_domain,default_role=excluded.default_role,enabled=excluded.enabled,
+    updated_by=excluded.updated_by,updated_at=excluded.updated_at`).bind(company.id, issuer, clientId,
+    encrypted.cipher, encrypted.nonce, allowedDomain || null, defaultRole, Number(enabled), company.email, now).run();
+  await audit(env, "admin", company.email, "oidc.updated", "company", company.id,
+    { issuer, allowedDomain: allowedDomain || null, defaultRole, enabled });
+  return json({ ok: true, issuer, clientId, allowedDomain: allowedDomain || null, defaultRole, enabled });
+}
+
+async function startOidc(request, env) {
+  const url = new URL(request.url), company = await companyByCode(env, url.searchParams.get("companyCode") || "");
+  if (!company) return json({ error: "sso_not_configured" }, 404);
+  const config = await env.DB.prepare("SELECT * FROM oidc_configs WHERE company_id=? AND enabled=1")
+    .bind(company.id).first();
+  if (!config) return json({ error: "sso_not_configured" }, 404);
+  const discovery = await oidcDiscovery(config.issuer), state = randomToken(32), nonce = randomToken(24);
+  const verifier = randomToken(48), encrypted = await encryptSecret(env, verifier);
+  const challenge = bytesToBase64Url(await crypto.subtle.digest("SHA-256", enc.encode(verifier)));
+  const redirectUri = `${url.origin}/api/auth/oidc/callback`;
+  await env.DB.prepare("INSERT INTO oidc_transactions VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(await sha256(state), company.id, encrypted.cipher, encrypted.nonce, await sha256(nonce),
+      redirectUri, new Date(Date.now() + 10 * 60 * 1000).toISOString()).run();
+  const authorization = new URL(discovery.authorization_endpoint);
+  Object.entries({ response_type: "code", client_id: config.client_id, redirect_uri: redirectUri,
+    scope: "openid email profile", state, nonce, code_challenge: challenge,
+    code_challenge_method: "S256" }).forEach(([key, value]) => authorization.searchParams.set(key, value));
+  return Response.redirect(authorization.toString(), 302);
+}
+
+async function oidcCallback(request, env) {
+  const url = new URL(request.url), state = url.searchParams.get("state") || "";
+  const code = url.searchParams.get("code") || "";
+  const transaction = state ? await env.DB.prepare(`SELECT t.*,c.name FROM oidc_transactions t
+    JOIN companies c ON c.id=t.company_id WHERE t.state_hash=? AND t.expires_at>?`)
+    .bind(await sha256(state), new Date().toISOString()).first() : null;
+  const failure = (reason) => Response.redirect(`${url.origin}/?sso_error=${encodeURIComponent(reason)}`, 302);
+  if (!transaction || !code) return failure("invalid_sso_response");
+  await env.DB.prepare("DELETE FROM oidc_transactions WHERE state_hash=?").bind(await sha256(state)).run();
+  try {
+    const config = await env.DB.prepare("SELECT * FROM oidc_configs WHERE company_id=? AND enabled=1")
+      .bind(transaction.company_id).first();
+    if (!config) return failure("sso_not_configured");
+    const discovery = await oidcDiscovery(config.issuer);
+    const verifier = await decryptSecret(env, transaction.verifier_cipher, transaction.verifier_nonce);
+    const secret = await decryptSecret(env, config.client_secret_cipher, config.client_secret_nonce);
+    const tokenResponse = await fetch(discovery.token_endpoint, { method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({ grant_type: "authorization_code", code,
+        redirect_uri: transaction.redirect_uri, client_id: config.client_id,
+        client_secret: secret, code_verifier: verifier }) });
+    if (!tokenResponse.ok) return failure("sso_token_exchange_failed");
+    const tokens = await tokenResponse.json();
+    const claims = await verifyOidcIdToken(tokens.id_token, discovery, config.client_id, transaction.nonce_hash);
+    const email = String(claims.email).trim().toLowerCase();
+    if (config.allowed_domain && !email.endsWith(`@${config.allowed_domain}`)) return failure("sso_domain_not_allowed");
+    let user = await env.DB.prepare("SELECT * FROM admin_users WHERE company_id=? AND email=?")
+      .bind(transaction.company_id, email).first();
+    const now = new Date(), company = { id: transaction.company_id, name: transaction.name };
+    if (!user) {
+      const createdAt = now.toISOString();
+      await env.DB.prepare(`INSERT INTO admin_users VALUES (?, ?, ?, ?, 'active', NULL, NULL, 0,
+        'oidc', ?, ?)`).bind(company.id, email, await hashPassword(randomToken(48)),
+        config.default_role, createdAt, createdAt).run();
+      user = await env.DB.prepare("SELECT * FROM admin_users WHERE company_id=? AND email=?")
+        .bind(company.id, email).first();
+    }
+    if (user.status !== "active") return failure("sso_user_suspended");
+    const token = randomToken(), csrfToken = randomToken(24);
+    const expiresAt = new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString();
+    await env.DB.prepare("INSERT INTO admin_sessions VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(await sha256(token), company.id, email, csrfToken, now.toISOString(), expiresAt).run();
+    await audit(env, "admin", email, "session.login", "company", company.id, { method: "oidc" });
+    return new Response(null, { status: 302, headers: { location: `${url.origin}/`,
+      "set-cookie": sessionCookie(token), "cache-control": "no-store" } });
+  } catch { return failure("sso_verification_failed"); }
 }
 
 async function logout(request, env) {
@@ -820,7 +967,7 @@ async function dashboardSummary(env, company) {
     opportunityStates, classificationRules, privacyRequests, consentEvents, deviceHeartbeats,
     collectionPolicy, classificationCorrections, legalHolds, privacyTargets,
     deletionReceipts, adminUsers, adminSessionCounts, deliveryChannels, reportDeliveries,
-    deliverySchedules] = await Promise.all([
+    deliverySchedules, oidcConfig] = await Promise.all([
     env.DB.prepare(
       `SELECT e.id, e.display_name, e.department, MAX(d.last_seen_at) AS last_seen_at
        FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
@@ -897,6 +1044,8 @@ async function dashboardSummary(env, company) {
       ORDER BY requested_at DESC LIMIT 200`).bind(company.id).all(),
     env.DB.prepare("SELECT * FROM delivery_schedules WHERE company_id=? ORDER BY channel")
       .bind(company.id).all(),
+    env.DB.prepare(`SELECT issuer,client_id,allowed_domain,default_role,enabled,updated_at
+      FROM oidc_configs WHERE company_id=?`).bind(company.id).first(),
   ]);
   const rows = [];
   const correctedCategories = new Map();
@@ -975,6 +1124,9 @@ async function dashboardSummary(env, company) {
     reportDeliveries: reportDeliveries.results,
     deliverySchedules: deliverySchedules.results.map((item) => ({ ...item,
       enabled: Boolean(item.enabled), human_review_required: Boolean(item.human_review_required) })),
+    oidcConfig: oidcConfig ? { issuer: oidcConfig.issuer, clientId: oidcConfig.client_id,
+      allowedDomain: oidcConfig.allowed_domain, defaultRole: oidcConfig.default_role,
+      enabled: Boolean(oidcConfig.enabled), updatedAt: oidcConfig.updated_at } : null,
     rows,
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
       reportsParsedFromEncryptedContent: fallbackCount,
@@ -1568,6 +1720,7 @@ async function runRetention(env) {
     }
   }
   statements.push(env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at<=?").bind(new Date().toISOString()));
+  statements.push(env.DB.prepare("DELETE FROM oidc_transactions WHERE expires_at<=?").bind(new Date().toISOString()));
   await env.DB.batch(statements);
 }
 
@@ -1660,6 +1813,10 @@ async function adminApi(request, env, pathname) {
   if (request.method === "GET" && pathname === "/api/admin/tenant-export") {
     if (company.role !== "owner") return json({ error: "permission_denied" }, 403);
     return exportTenantData(env, company);
+  }
+  if (request.method === "PUT" && pathname === "/api/admin/oidc-config") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return configureOidc(request, env, company);
   }
   if (request.method === "PATCH" && pathname === "/api/admin/password") {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
@@ -1798,6 +1955,14 @@ export default {
         await ensureSchema(env);
         return login(request, env);
       }
+      if (request.method === "GET" && url.pathname === "/api/auth/oidc/start") {
+        await ensureSchema(env);
+        return startOidc(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/oidc/callback") {
+        await ensureSchema(env);
+        return oidcCallback(request, env);
+      }
       if (request.method === "POST" && url.pathname === "/api/auth/logout") {
         await ensureSchema(env);
         return logout(request, env);
@@ -1862,4 +2027,4 @@ export default {
 };
 
 export { decryptReport, encryptReport, normalizeReport, runRetention, runScheduledDeliveries,
-  sha256, timingSafeMatch };
+  sha256, timingSafeMatch, verifyOidcIdToken };
