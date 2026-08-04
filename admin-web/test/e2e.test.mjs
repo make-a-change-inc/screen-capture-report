@@ -274,6 +274,27 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(correctedData.rows.find((item) => item.category === "development").minutes, 600);
   assert.equal(correctedData.rows.find((item) => item.category === "administration").minutes, 120);
 
+  assert.equal((await fetch("/api/admin/delivery-channel", { method: "PUT", headers: {
+    ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({
+      channel: "email", destination: "reports@example.test", enabled: true }) })).status, 200);
+  assert.equal((await fetch("/api/admin/delivery-schedule", { method: "PUT", headers: {
+    ...mutationHeaders, "content-type": "application/json" }, body: JSON.stringify({
+      channel: "email", weekday: 1, hour: 9, timezone: "Asia/Tokyo",
+      humanReviewRequired: true }) })).status, 200);
+  assert.equal((await fetch(`/api/admin/reports/${report.report_id}/pdf-audit`, {
+    method: "POST", headers: mutationHeaders })).status, 200);
+  const unavailableEmail = await fetch(`/api/admin/reports/${report.report_id}/deliver`, {
+    method: "POST", headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ channel: "email" }) });
+  assert.equal(unavailableEmail.status, 503);
+  assert.equal((await unavailableEmail.json()).error, "email_service_not_configured");
+  const deliverySummary = await fetch("/api/dashboard/summary", { headers: sessionHeaders });
+  const deliveryData = await deliverySummary.json();
+  assert.equal(deliveryData.deliveryChannels[0].destination_hint, "re***@example.test");
+  assert.equal(deliveryData.deliveryChannels[0].available, false);
+  assert.equal(deliveryData.reportDeliveries[0].status, "failed");
+  assert.equal(deliveryData.deliverySchedules[0].human_review_required, true);
+
   const holdCreated = await fetch("/api/admin/legal-holds", { method: "POST",
     headers: { ...mutationHeaders, "content-type": "application/json" },
     body: JSON.stringify({ targetType: "employee", targetId: renamedBody.employeeId,

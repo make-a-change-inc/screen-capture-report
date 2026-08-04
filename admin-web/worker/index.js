@@ -224,6 +224,18 @@ const schemaStatements = [
     request_id TEXT NOT NULL UNIQUE, target_type TEXT NOT NULL, target_id_hash TEXT NOT NULL,
     reports_deleted INTEGER NOT NULL, devices_deleted INTEGER NOT NULL, employees_deleted INTEGER NOT NULL,
     executed_by TEXT NOT NULL, executed_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS delivery_channels (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    channel TEXT NOT NULL, destination_cipher BLOB NOT NULL, destination_nonce BLOB NOT NULL,
+    destination_hint TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(company_id, channel))`,
+  `CREATE TABLE IF NOT EXISTS report_deliveries (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    report_id TEXT NOT NULL, channel TEXT NOT NULL, destination_hint TEXT NOT NULL,
+    status TEXT NOT NULL, provider_reference TEXT, error_code TEXT, requested_by TEXT NOT NULL,
+    requested_at TEXT NOT NULL, completed_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS delivery_schedules (id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+    channel TEXT NOT NULL, weekday INTEGER NOT NULL, hour INTEGER NOT NULL, timezone TEXT NOT NULL,
+    human_review_required INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(company_id, channel))`,
 ];
 
 async function ensureSchema(env) {
@@ -778,7 +790,8 @@ async function dashboardSummary(env, company) {
   const [employees, deviceSummary, deviceRows, reports, reportVersions, auditRows, settings,
     opportunityStates, classificationRules, privacyRequests, consentEvents, deviceHeartbeats,
     collectionPolicy, classificationCorrections, legalHolds, privacyTargets,
-    deletionReceipts, adminUsers, adminSessionCounts] = await Promise.all([
+    deletionReceipts, adminUsers, adminSessionCounts, deliveryChannels, reportDeliveries,
+    deliverySchedules] = await Promise.all([
     env.DB.prepare(
       `SELECT e.id, e.display_name, e.department, MAX(d.last_seen_at) AS last_seen_at
        FROM company_employees ce JOIN employees e ON e.id=ce.employee_id
@@ -848,6 +861,12 @@ async function dashboardSummary(env, company) {
       WHERE company_id=? ORDER BY email`).bind(company.id).all(),
     env.DB.prepare(`SELECT email,COUNT(*) AS session_count,MAX(created_at) AS latest_session_at,
       MAX(expires_at) AS latest_expiry FROM admin_sessions WHERE company_id=? GROUP BY email`)
+      .bind(company.id).all(),
+    env.DB.prepare(`SELECT id,channel,destination_hint,enabled,created_at,updated_at
+      FROM delivery_channels WHERE company_id=? ORDER BY channel`).bind(company.id).all(),
+    env.DB.prepare(`SELECT * FROM report_deliveries WHERE company_id=?
+      ORDER BY requested_at DESC LIMIT 200`).bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM delivery_schedules WHERE company_id=? ORDER BY channel")
       .bind(company.id).all(),
   ]);
   const rows = [];
@@ -922,6 +941,11 @@ async function dashboardSummary(env, company) {
     adminUsers: adminUsers.results.map((user) => ({ ...user,
       mfa_enabled: Boolean(user.mfa_enabled), ...(adminSessionCounts.results.find(
         (session) => session.email === user.email) || { session_count: 0 }) })),
+    deliveryChannels: deliveryChannels.results.map((item) => ({ ...item, enabled: Boolean(item.enabled),
+      available: item.channel !== "email" || Boolean(env.EMAIL && env.REPORT_EMAIL_FROM) })),
+    reportDeliveries: reportDeliveries.results,
+    deliverySchedules: deliverySchedules.results.map((item) => ({ ...item,
+      enabled: Boolean(item.enabled), human_review_required: Boolean(item.human_review_required) })),
     rows,
     quality: { reportsWithStructuredMetrics: reportsWithRows - fallbackCount,
       reportsParsedFromEncryptedContent: fallbackCount,
@@ -1232,7 +1256,7 @@ async function recordConsent(request, env, company) {
 const canMutate = (company, pathname) => {
   if (company.role === "owner") return true;
   if (company.role === "auditor") return false;
-  return /^\/api\/admin\/(reports\/[^/]+\/workflow|opportunities\/state|classification-corrections)$/.test(pathname);
+  return /^\/api\/admin\/(reports\/[^/]+\/(workflow|deliver|pdf-audit)|opportunities\/state|classification-corrections)$/.test(pathname);
 };
 
 async function createAdminUser(request, env, company) {
@@ -1325,6 +1349,110 @@ async function confirmMfa(request, env, company) {
   return json({ ok: true, mfaEnabled: true });
 }
 
+const deliveryHint = (channel, destination) => channel === "email"
+  ? destination.replace(/^(.{2}).*(@.*)$/, "$1***$2") : new URL(destination).hostname;
+
+async function configureDeliveryChannel(request, env, company) {
+  const body = await request.json(), channel = String(body.channel || "");
+  const destination = String(body.destination || "").trim();
+  const enabled = body.enabled !== false;
+  const emailValid = channel === "email" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(destination);
+  let webhookValid = false;
+  if (["slack", "teams"].includes(channel)) {
+    try {
+      const url = new URL(destination);
+      webhookValid = url.protocol === "https:" && (channel === "slack"
+        ? url.hostname === "hooks.slack.com" : /(^|\.)(office\.com|office365\.com)$/.test(url.hostname));
+    } catch { webhookValid = false; }
+  }
+  if (!emailValid && !webhookValid) return json({ error: "invalid_delivery_destination" }, 400);
+  const encrypted = await encryptSecret(env, destination), now = new Date().toISOString();
+  const existing = await env.DB.prepare("SELECT id,created_at,created_by FROM delivery_channels WHERE company_id=? AND channel=?")
+    .bind(company.id, channel).first();
+  await env.DB.prepare(`INSERT INTO delivery_channels VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(company_id,channel) DO UPDATE SET destination_cipher=excluded.destination_cipher,
+    destination_nonce=excluded.destination_nonce,destination_hint=excluded.destination_hint,
+    enabled=excluded.enabled,updated_at=excluded.updated_at`).bind(existing?.id || crypto.randomUUID(), company.id,
+    channel, encrypted.cipher, encrypted.nonce, deliveryHint(channel, destination), Number(enabled),
+    existing?.created_by || company.email, existing?.created_at || now, now).run();
+  await audit(env, "admin", company.email, "delivery_channel.updated", "company", company.id,
+    { channel, enabled, destinationHint: deliveryHint(channel, destination) });
+  return json({ ok: true, channel, enabled, destinationHint: deliveryHint(channel, destination) });
+}
+
+async function configureDeliverySchedule(request, env, company) {
+  const body = await request.json(), channel = String(body.channel || "");
+  const weekday = Number(body.weekday), hour = Number(body.hour);
+  const timezone = String(body.timezone || "Asia/Tokyo"), review = body.humanReviewRequired !== false;
+  if (!["email", "slack", "teams"].includes(channel) || !Number.isInteger(weekday) || weekday < 0
+    || weekday > 6 || !Number.isInteger(hour) || hour < 0 || hour > 23
+    || !/^[A-Za-z_]+\/[A-Za-z_+-]+$/.test(timezone)) return json({ error: "invalid_schedule" }, 400);
+  const now = new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO delivery_schedules VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    ON CONFLICT(company_id,channel) DO UPDATE SET weekday=excluded.weekday,hour=excluded.hour,
+    timezone=excluded.timezone,human_review_required=excluded.human_review_required,
+    enabled=excluded.enabled,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
+    .bind(crypto.randomUUID(), company.id, channel, weekday, hour, timezone, Number(review),
+      company.email, now).run();
+  await audit(env, "admin", company.email, "delivery_schedule.updated", "company", company.id,
+    { channel, weekday, hour, timezone, humanReviewRequired: review });
+  return json({ ok: true });
+}
+
+async function deliverReport(env, company, reportId, channel, baseUrl, actor = company.email) {
+  const report = await env.DB.prepare(`SELECT r.content_cipher,r.content_nonce,r.period_start,r.period_end,
+    e.display_name,COALESCE(w.status,'finalized') AS workflow_status FROM reports r
+    JOIN company_reports cr ON cr.report_id=r.id JOIN employees e ON e.id=r.employee_id
+    LEFT JOIN report_workflows w ON w.report_id=r.id AND w.company_id=cr.company_id
+    WHERE r.id=? AND cr.company_id=?`).bind(reportId, company.id).first();
+  if (!report) return json({ error: "not_found" }, 404);
+  if (report.workflow_status !== "finalized") return json({ error: "report_not_finalized" }, 409);
+  const config = await env.DB.prepare("SELECT * FROM delivery_channels WHERE company_id=? AND channel=? AND enabled=1")
+    .bind(company.id, channel).first();
+  if (!config) return json({ error: "delivery_channel_not_configured" }, 409);
+  const id = crypto.randomUUID(), now = new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO report_deliveries VALUES (?, ?, ?, ?, ?, 'sending', NULL, NULL, ?, ?, NULL)`)
+    .bind(id, company.id, reportId, channel, config.destination_hint, actor, now).run();
+  try {
+    const destination = await decryptSecret(env, config.destination_cipher, config.destination_nonce);
+    const title = `${report.display_name} ${report.period_start}〜${report.period_end} 週次管理レポート`;
+    const reportUrl = `${String(baseUrl || "").replace(/\/$/, "")}/`;
+    let reference = null;
+    if (channel === "email") {
+      if (!env.EMAIL || !env.REPORT_EMAIL_FROM) throw Object.assign(new Error("email_service_not_configured"),
+        { code: "email_service_not_configured" });
+      const html = await decryptReport(env, report.content_cipher, report.content_nonce);
+      const sent = await env.EMAIL.send({ to: destination,
+        from: { email: env.REPORT_EMAIL_FROM, name: "Work Visibility AI" }, subject: title,
+        html, text: `${title}\n${reportUrl}` });
+      reference = sent?.messageId || null;
+    } else {
+      const payload = channel === "slack" ? { text: `${title}\n${reportUrl}` }
+        : { text: title, type: "message", attachments: [{ contentType: "application/vnd.microsoft.card.adaptive",
+          content: { type: "AdaptiveCard", version: "1.4", body: [{ type: "TextBlock", text: title }],
+            actions: [{ type: "Action.OpenUrl", title: "管理画面で開く", url: reportUrl }] } }] };
+      const response = await fetch(destination, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload) });
+      if (!response.ok) throw Object.assign(new Error("webhook_delivery_failed"), { code: `http_${response.status}` });
+    }
+    const completedAt = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE report_deliveries SET status='delivered',provider_reference=?,completed_at=? WHERE id=?")
+        .bind(reference, completedAt, id),
+      env.DB.prepare("UPDATE report_workflows SET status='delivered',updated_by=?,updated_at=? WHERE report_id=? AND company_id=?")
+        .bind(actor, completedAt, reportId, company.id),
+    ]);
+    await audit(env, "admin", actor, "report.delivered", "report", reportId, { deliveryId: id, channel });
+    return json({ id, status: "delivered", channel });
+  } catch (error) {
+    await env.DB.prepare("UPDATE report_deliveries SET status='failed',error_code=?,completed_at=? WHERE id=?")
+      .bind(String(error?.code || "delivery_failed").slice(0, 128), new Date().toISOString(), id).run();
+    await audit(env, "admin", actor, "report.delivery_failed", "report", reportId,
+      { deliveryId: id, channel, errorCode: String(error?.code || "delivery_failed").slice(0, 128) });
+    return json({ error: error?.code || "delivery_failed", deliveryId: id }, 503);
+  }
+}
+
 async function runRetention(env) {
   await ensureSchema(env);
   const statements = [];
@@ -1370,6 +1498,26 @@ async function runRetention(env) {
   await env.DB.batch(statements);
 }
 
+async function runScheduledDeliveries(env) {
+  const schedules = await env.DB.prepare(`SELECT s.*,c.name FROM delivery_schedules s
+    JOIN companies c ON c.id=s.company_id WHERE s.enabled=1 AND s.human_review_required=0
+    AND c.status='active'`).all();
+  const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  for (const schedule of schedules.results) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone,
+      weekday: "short", hour: "numeric", hourCycle: "h23" }).formatToParts(new Date())
+      .filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+    if (weekdays[parts.weekday] !== Number(schedule.weekday) || Number(parts.hour) !== Number(schedule.hour)) continue;
+    const report = await env.DB.prepare(`SELECT r.id FROM reports r JOIN company_reports cr ON cr.report_id=r.id
+      JOIN report_workflows w ON w.report_id=r.id AND w.company_id=cr.company_id
+      WHERE cr.company_id=? AND w.status='finalized' AND NOT EXISTS (SELECT 1 FROM report_deliveries d
+      WHERE d.company_id=cr.company_id AND d.report_id=r.id AND d.channel=? AND d.status IN ('sending','delivered'))
+      ORDER BY r.period_start DESC,r.received_at DESC LIMIT 1`).bind(schedule.company_id, schedule.channel).first();
+    if (report) await deliverReport(env, { id: schedule.company_id, name: schedule.name,
+      email: "system", role: "owner" }, report.id, schedule.channel, env.PUBLIC_ADMIN_URL, "system");
+  }
+}
+
 async function adminApi(request, env, pathname) {
   const company = await requireAdmin(request, env);
   if (!company) return json({ error: "admin_auth_required" }, 401);
@@ -1401,6 +1549,29 @@ async function adminApi(request, env, pathname) {
   if (request.method === "POST" && pathname === "/api/admin/mfa/confirm") {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
     return confirmMfa(request, env, company);
+  }
+  if (request.method === "PUT" && pathname === "/api/admin/delivery-channel") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return configureDeliveryChannel(request, env, company);
+  }
+  if (request.method === "PUT" && pathname === "/api/admin/delivery-schedule") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return configureDeliverySchedule(request, env, company);
+  }
+  const deliverMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/deliver$/);
+  if (request.method === "POST" && deliverMatch) {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    const body = await request.json();
+    return deliverReport(env, company, deliverMatch[1], String(body.channel || ""),
+      new URL(request.url).origin);
+  }
+  const pdfAuditMatch = pathname.match(/^\/api\/admin\/reports\/([^/]+)\/pdf-audit$/);
+  if (request.method === "POST" && pdfAuditMatch) {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    if (!await env.DB.prepare("SELECT report_id FROM company_reports WHERE company_id=? AND report_id=?")
+      .bind(company.id, pdfAuditMatch[1]).first()) return json({ error: "not_found" }, 404);
+    await audit(env, "admin", company.email, "report.pdf_exported", "report", pdfAuditMatch[1]);
+    return json({ ok: true });
   }
   if (request.method === "GET" && pathname === "/api/admin/summary") return listSummary(env, company);
   if (request.method === "POST" && pathname === "/api/admin/devices") {
@@ -1571,7 +1742,9 @@ export default {
   },
   async scheduled(_controller, env) {
     await runRetention(env);
+    await runScheduledDeliveries(env);
   },
 };
 
-export { decryptReport, encryptReport, normalizeReport, runRetention, sha256, timingSafeMatch };
+export { decryptReport, encryptReport, normalizeReport, runRetention, runScheduledDeliveries,
+  sha256, timingSafeMatch };
