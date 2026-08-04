@@ -14,11 +14,23 @@ class RecordingClient:
         self.heartbeats: list[dict] = []
 
     def register(
-        self, api_url: str, company_code: str, employee_id: str,
-        department: str, device_name: str, *, sites_bypass_token: str = "",
+        self,
+        api_url: str,
+        company_code: str,
+        employee_id: str,
+        department: str,
+        device_name: str,
+        *,
+        sites_bypass_token: str = "",
     ) -> RegistrationResult:
-        self.registrations.append({"company_code": company_code, "employee_id": employee_id,
-                                   "department": department, "device_name": device_name})
+        self.registrations.append(
+            {
+                "company_code": company_code,
+                "employee_id": employee_id,
+                "department": department,
+                "device_name": device_name,
+            }
+        )
         return RegistrationResult(True, "device-token")
 
     def upload(
@@ -35,7 +47,9 @@ class RecordingClient:
         self.payloads.append(payload)
         return self.result
 
-    def heartbeat(self, api_url: str, token: str, payload: dict, *, sites_bypass_token: str = "") -> UploadResult:
+    def heartbeat(
+        self, api_url: str, token: str, payload: dict, *, sites_bypass_token: str = ""
+    ) -> UploadResult:
         assert api_url == "https://management.example.test"
         assert token == "device-token"
         self.heartbeats.append(payload)
@@ -123,10 +137,16 @@ def test_sync_self_registers_from_company_code(database, settings) -> None:
     settings.grant_server_sync_consent()
     settings.server_sync_enabled = True
     client = RecordingClient()
-    secrets = MemorySecretStore({"company_code": "company-code-001", "employee_id": "employee-1",
-                                 "department": "Engineering"})
-    sync = ManagementReportSync(database=database, settings_provider=lambda: settings,
-                                secrets=secrets, client=client)  # type: ignore[arg-type]
+    secrets = MemorySecretStore(
+        {
+            "company_code": "company-code-001",
+            "employee_id": "employee-1",
+            "department": "Engineering",
+        }
+    )
+    sync = ManagementReportSync(
+        database=database, settings_provider=lambda: settings, secrets=secrets, client=client
+    )  # type: ignore[arg-type]
     assert sync.sync_pending() == 0
     assert secrets.get("admin_upload_token") == "device-token"
     assert client.registrations[0]["company_code"] == "company-code-001"
