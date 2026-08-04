@@ -110,6 +110,20 @@ test("management report completes the admin API round trip", async (t) => {
   assert.equal(duplicate.status, 200);
   assert.equal((await duplicate.json()).reportId, report.report_id);
 
+  const reportV2 = { ...report, revision: 2,
+    generated_at: "2026-07-20T01:00:00.000Z",
+    report_html: "<h1>週次管理レポート v2</h1><p>レビュー反映済み</p>" };
+  const uploadedV2 = await fetch("/api/v1/device/reports/weekly-management", {
+    ...uploadInit, headers: { ...uploadInit.headers, "idempotency-key": `${report.report_id}-v2` },
+    body: JSON.stringify(reportV2),
+  });
+  assert.equal(uploadedV2.status, 200);
+  const conflictingV2 = await fetch("/api/v1/device/reports/weekly-management", {
+    ...uploadInit, headers: { ...uploadInit.headers, "idempotency-key": `${report.report_id}-v2-conflict` },
+    body: JSON.stringify({ ...reportV2, report_html: "<p>同一版の不正な差し替え</p>" }),
+  });
+  assert.equal(conflictingV2.status, 409);
+
   const forbiddenDaily = await fetch("/api/v1/device/reports/weekly-management", {
     ...uploadInit,
     headers: { ...uploadInit.headers, "idempotency-key": "daily-report" },
@@ -152,14 +166,63 @@ test("management report completes the admin API round trip", async (t) => {
   );
   assert.equal(liveDashboard.reportCount, 1);
   assert.deepEqual(liveDashboard.rows.map((item) => item.minutes), [720, 480]);
+  assert.equal(liveDashboard.reports[0].revision, 2);
+  assert.deepEqual(liveDashboard.reports[0].versions.map((item) => item.revision), [2, 1]);
 
   const content = await fetch(`/api/admin/reports/${report.report_id}/content`, {
     headers: sessionHeaders,
   });
   assert.equal(content.status, 200);
   const decrypted = await content.json();
-  assert.equal(decrypted.html, report.report_html);
-  assert.equal(decrypted.sha256, digest(report.report_html));
+  assert.equal(decrypted.html, reportV2.report_html);
+  assert.equal(decrypted.sha256, digest(reportV2.report_html));
+  const firstVersion = await fetch(`/api/admin/reports/${report.report_id}/versions/1/content`, {
+    headers: sessionHeaders,
+  });
+  assert.equal(firstVersion.status, 200);
+  assert.equal((await firstVersion.json()).html, report.report_html);
+
+  const workflowToReview = await fetch(`/api/admin/reports/${report.report_id}/workflow`, {
+    method: "PATCH", headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "review_pending", note: "再確認" }),
+  });
+  assert.equal(workflowToReview.status, 200);
+  const invalidWorkflow = await fetch(`/api/admin/reports/${report.report_id}/workflow`, {
+    method: "PATCH", headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "delivered" }),
+  });
+  assert.equal(invalidWorkflow.status, 409);
+  assert.equal((await fetch(`/api/admin/reports/${report.report_id}/workflow`, {
+    method: "PATCH", headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "finalized" }),
+  })).status, 200);
+
+  assert.equal((await fetch("/api/admin/opportunities/state", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ department: "開発部", category: "development", status: "reviewing",
+      owner: "技術責任者", nextAction: "PoC計画を作成" }) })).status, 200);
+  assert.equal((await fetch("/api/admin/classification-rules", { method: "PUT",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ category: "development", displayName: "開発・レビュー",
+      automationRate: 0.45, status: "active" }) })).status, 200);
+  const privacyCreated = await fetch("/api/admin/privacy-requests", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ requestType: "export", subject: "山田 花子", reason: "本人確認" }) });
+  assert.equal(privacyCreated.status, 201);
+  const privacyId = (await privacyCreated.json()).id;
+  assert.equal((await fetch(`/api/admin/privacy-requests/${privacyId}`, { method: "PATCH",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ status: "processing" }) })).status, 200);
+  assert.equal((await fetch("/api/admin/consent-events", { method: "POST",
+    headers: { ...mutationHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ employeeId: liveDashboard.employees[0].id, status: "granted",
+      source: "労務確認" }) })).status, 201);
+  const phase2Summary = await fetch("/api/dashboard/summary", { headers: sessionHeaders });
+  const phase2Data = await phase2Summary.json();
+  assert.equal(phase2Data.opportunityStates[0].status, "reviewing");
+  assert.equal(phase2Data.classificationRules[0].automation_rate, 0.45);
+  assert.equal(phase2Data.privacyRequests[0].status, "processing");
+  assert.equal(phase2Data.consentEvents[0].status, "granted");
 
   const betaRegistration = await fetch("/api/v1/device/register", { method: "POST",
     headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode: "company-code-beta",
@@ -169,6 +232,7 @@ test("management report completes the admin API round trip", async (t) => {
     headers: { "content-type": "application/json" }, body: JSON.stringify({ companyCode: "company-code-beta",
       email: adminEmail, password: adminPassword }) });
   assert.equal(betaLogin.status, 200);
+  const betaLoginBody = await betaLogin.json();
   const betaHeaders = { cookie: betaLogin.headers.get("set-cookie").split(";")[0] };
   const otherBootstrap = await fetch("/api/admin/summary", { headers: betaHeaders });
   assert.equal(otherBootstrap.status, 200);
@@ -177,6 +241,12 @@ test("management report completes the admin API round trip", async (t) => {
     headers: betaHeaders,
   });
   assert.equal(crossTenantContent.status, 404);
+  assert.equal((await fetch(`/api/admin/reports/${report.report_id}/versions/1/content`, {
+    headers: betaHeaders,
+  })).status, 404);
+  assert.equal((await fetch(`/api/admin/privacy-requests/${privacyId}`, { method: "PATCH",
+    headers: { ...betaHeaders, "x-csrf-token": betaLoginBody.csrfToken,
+      "content-type": "application/json" }, body: JSON.stringify({ status: "completed" }) })).status, 404);
 
   const badCsrf = await fetch("/api/admin/settings", { method: "PATCH", headers: {
     ...sessionHeaders, "content-type": "application/json" }, body: JSON.stringify({ timezone: "Asia/Tokyo",
