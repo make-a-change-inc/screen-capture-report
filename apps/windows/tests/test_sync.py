@@ -7,8 +7,13 @@ from src.sync import ManagementReportSync, RegistrationResult, UploadResult
 
 
 class RecordingClient:
-    def __init__(self, result: UploadResult | None = None) -> None:
+    def __init__(
+        self,
+        result: UploadResult | None = None,
+        registration_result: RegistrationResult | None = None,
+    ) -> None:
         self.result = result or UploadResult(True)
+        self.registration_result = registration_result or RegistrationResult(True, "device-token")
         self.payloads: list[dict] = []
         self.registrations: list[dict] = []
 
@@ -18,7 +23,7 @@ class RecordingClient:
     ) -> RegistrationResult:
         self.registrations.append({"company_code": company_code, "employee_id": employee_id,
                                    "department": department, "device_name": device_name})
-        return RegistrationResult(True, "device-token")
+        return self.registration_result
 
     def upload(
         self,
@@ -120,6 +125,40 @@ def test_sync_self_registers_from_company_code(database, settings) -> None:
     assert sync.sync_pending() == 0
     assert secrets.get("admin_upload_token") == "device-token"
     assert client.registrations[0]["company_code"] == "company-code-001"
+
+
+def test_explicit_device_registration_keeps_sync_disabled_until_success(database, settings) -> None:
+    settings.admin_api_url = "https://management.example.test"
+    settings.server_sync_enabled = False
+    secrets = MemorySecretStore(
+        {
+            "company_code": "company-code-001",
+            "employee_id": "employee-1",
+            "department": "Engineering",
+        }
+    )
+    failed = ManagementReportSync(
+        database=database,
+        settings_provider=lambda: settings,
+        secrets=secrets,
+        client=RecordingClient(
+            registration_result=RegistrationResult(False, error_code="network_error")
+        ),  # type: ignore[arg-type]
+    )
+
+    assert not failed.register_device().success
+    assert secrets.get("admin_upload_token") is None
+    assert not settings.server_sync_enabled
+
+    succeeded = ManagementReportSync(
+        database=database,
+        settings_provider=lambda: settings,
+        secrets=secrets,
+        client=RecordingClient(),  # type: ignore[arg-type]
+    )
+    assert succeeded.register_device().success
+    assert secrets.get("admin_upload_token") == "device-token"
+    assert not settings.server_sync_enabled
 
 
 def test_sync_re_registers_after_device_token_is_rejected(database, settings) -> None:

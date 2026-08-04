@@ -192,6 +192,7 @@ def _run_application(
     ui = WindowsTrayUI(
         service=service,
         reports=reports,
+        report_sync=report_sync,
         settings_store=settings_store,
         secrets=secrets,
         platform_api=platform_api,

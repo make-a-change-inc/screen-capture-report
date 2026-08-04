@@ -1,1 +1,1 @@
-export { dashboardPage as authenticatedDashboardPage } from "./dashboard-page.js";
+export { authenticatedDashboardPage } from "./dashboard-presentation.js";

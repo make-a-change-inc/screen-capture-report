@@ -12,6 +12,17 @@ test("dashboard uses server-side cookie sessions without browser password storag
   assert.doesNotMatch(authenticatedDashboardPage, /sessionStorage|localStorage|x-admin-password/);
 });
 
+test("management dashboard prioritizes weekly AI opportunity decisions", () => {
+  assert.match(authenticatedDashboardPage, /経営サマリー/);
+  assert.match(authenticatedDashboardPage, /対象業務の週次実測時間/);
+  assert.match(authenticatedDashboardPage, /AI化した場合の週次削減見込み/);
+  assert.match(authenticatedDashboardPage, /今回の集計対象社員数/);
+  assert.match(authenticatedDashboardPage, /実測 .*想定自動化率/);
+  assert.doesNotMatch(authenticatedDashboardPage, /id="reportCount"/);
+  assert.doesNotMatch(authenticatedDashboardPage, /要対応事項/);
+  assert.doesNotMatch(authenticatedDashboardPage, /id="alerts"/);
+});
+
 test("dashboard exposes real Japanese navigation pages", () => {
   for (const label of ["経営ダッシュボード", "業務分析", "AI化候補", "レポート", "従業員管理",
     "端末・収集状況", "分類ルール・データ品質", "プライバシー・データ管理", "ユーザー・権限",

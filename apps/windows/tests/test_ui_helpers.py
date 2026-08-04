@@ -102,6 +102,14 @@ def test_settings_dialog_keeps_all_fields_and_actions_scrollable() -> None:
     assert 'canvas.bind_all(' in source
 
 
+def test_onboarding_registers_before_enabling_management_sync() -> None:
+    source = inspect.getsource(WindowsTrayUI.run_onboarding)
+
+    assert source.index("registration = self.report_sync.register_device()") < source.index(
+        "settings.server_sync_enabled = True"
+    )
+
+
 def test_tray_becomes_visible_before_capture_service_starts(tmp_path: Path) -> None:
     events: list[str] = []
     ui, _platform = build_ui(tmp_path, events)

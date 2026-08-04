@@ -122,20 +122,19 @@ class ManagementReportSync:
         self._registration_retry_count = 0
         self._registration_next_at: datetime | None = None
 
-    def _device_token(self, settings: Settings) -> str:
-        token = self.secrets.get("admin_upload_token") or ""
-        if token:
-            return token
-        now = datetime.now().astimezone()
-        if self._registration_next_at and now < self._registration_next_at:
-            return ""
+    def register_device(self) -> RegistrationResult:
+        """Register this device and persist its token without enabling report sync."""
+        settings: Settings = self.settings_provider()
         company_code = self.secrets.get("company_code") or ""
         employee_id = self.secrets.get("employee_id") or ""
         department = self.secrets.get("department") or ""
-        if not all((company_code, employee_id, department)):
-            return ""
+        if not all((settings.admin_api_url, company_code, employee_id, department)):
+            return RegistrationResult(False, error_code="registration_details_missing")
         result = self.client.register(
-            settings.admin_api_url, company_code, employee_id, department,
+            settings.admin_api_url,
+            company_code,
+            employee_id,
+            department,
             platform.node() or "Windows PC",
             sites_bypass_token=self.secrets.get("admin_sites_bypass_token") or "",
         )
@@ -143,6 +142,17 @@ class ManagementReportSync:
             self.secrets.set("admin_upload_token", result.device_token)
             self._registration_retry_count = 0
             self._registration_next_at = None
+        return result
+
+    def _device_token(self, settings: Settings) -> str:
+        token = self.secrets.get("admin_upload_token") or ""
+        if token:
+            return token
+        now = datetime.now().astimezone()
+        if self._registration_next_at and now < self._registration_next_at:
+            return ""
+        result = self.register_device()
+        if result.success:
             return result.device_token
         delay = min(3600, 60 * (2 ** self._registration_retry_count))
         self._registration_retry_count += 1

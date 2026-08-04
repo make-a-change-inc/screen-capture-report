@@ -40,8 +40,8 @@ const cookieValue = (request, name) => {
   return "";
 };
 
-const sessionCookie = (token, maxAge = 28800) =>
-  `scr_admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
+const sessionCookie = (token, maxAge = 28800, secure = true) =>
+  `scr_admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly;${secure ? " Secure;" : ""} SameSite=Strict; Max-Age=${maxAge}`;
 
 async function sha256(value) {
   return hex(await crypto.subtle.digest("SHA-256", typeof value === "string" ? enc.encode(value) : value));
@@ -262,8 +262,9 @@ async function login(request, env) {
     ).bind(await sha256(token), company.id, email, csrfToken, now.toISOString(), expiresAt),
   ]);
   await audit(env, "admin", email, "session.login", "company", company.id);
+  const secureCookie = new URL(request.url).protocol === "https:";
   return json({ company: { id: company.id, name: company.name }, email, csrfToken, expiresAt }, 200,
-    { "set-cookie": sessionCookie(token) });
+    { "set-cookie": sessionCookie(token, 28800, secureCookie) });
 }
 
 async function logout(request, env) {
@@ -273,7 +274,8 @@ async function logout(request, env) {
       .bind(await sha256(company.sessionToken)).run();
     await audit(env, "admin", company.email, "session.logout", "company", company.id);
   }
-  return json({ ok: true }, 200, { "set-cookie": sessionCookie("", 0) });
+  const secureCookie = new URL(request.url).protocol === "https:";
+  return json({ ok: true }, 200, { "set-cookie": sessionCookie("", 0, secureCookie) });
 }
 
 const validCsrf = (request, company) => {
