@@ -33,6 +33,18 @@ def test_settings_round_trip_and_consent(tmp_path: Path) -> None:
     assert not loaded.capture_paused
 
 
+def test_environment_can_override_management_api_for_local_development(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "config.json"
+    store = SettingsStore(path)
+    store.save(Settings(admin_api_url="https://management.example.test"))
+
+    monkeypatch.setenv("SCREEN_CAPTURE_REPORT_ADMIN_API_URL", "http://127.0.0.1:8787/")
+
+    assert store.load().admin_api_url == "http://127.0.0.1:8787"
+
+
 def test_secret_store_does_not_join_public_settings() -> None:
     secrets = MemorySecretStore()
     secrets.set("gemini_api_key", "super-secret")
@@ -107,9 +119,6 @@ def test_required_onboarding_secret_gate_fails_closed() -> None:
             "department": "QA",
         }
     )
-    assert not has_required_onboarding_secrets(secrets)
-
-    secrets.set("privacy_contact", "privacy@example.test")
     assert has_required_onboarding_secrets(secrets)
 
 

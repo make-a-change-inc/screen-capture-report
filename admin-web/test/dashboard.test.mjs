@@ -4,12 +4,31 @@ import test from "node:test";
 import { dashboardPage } from "../worker/dashboard-page.js";
 import { authenticatedDashboardPage } from "../worker/authenticated-dashboard-page.js";
 
+test("authenticated dashboard inline script is valid JavaScript", () => {
+  const scripts = [...authenticatedDashboardPage.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  assert.equal(scripts.length, 1);
+  assert.doesNotThrow(() => new Function(scripts[0][1]));
+});
+
 test("dashboard uses server-side cookie sessions without browser password storage", () => {
   assert.match(authenticatedDashboardPage, /\/api\/auth\/login/);
   assert.match(authenticatedDashboardPage, /\/api\/auth\/session/);
   assert.match(authenticatedDashboardPage, /\/api\/auth\/logout/);
   assert.match(authenticatedDashboardPage, /credentials:'same-origin'/);
   assert.doesNotMatch(authenticatedDashboardPage, /sessionStorage|localStorage|x-admin-password/);
+});
+
+test("management dashboard prioritizes weekly AI opportunity decisions", () => {
+  assert.match(authenticatedDashboardPage, /経営サマリー/);
+  assert.match(authenticatedDashboardPage, /対象業務の週次実測時間/);
+  assert.match(authenticatedDashboardPage, /AI化した場合の週次削減見込み/);
+  assert.match(authenticatedDashboardPage, /今回の集計対象社員数/);
+  assert.match(authenticatedDashboardPage, /実測 .*想定自動化率/);
+  assert.match(authenticatedDashboardPage, /直近3か月の週次実測推移/);
+  assert.match(authenticatedDashboardPage, /2週分のデータがそろうと、週ごとの実測時間の変化を表示します/);
+  assert.doesNotMatch(authenticatedDashboardPage, /id="reportCount"/);
+  assert.doesNotMatch(authenticatedDashboardPage, /要対応事項/);
+  assert.doesNotMatch(authenticatedDashboardPage, /id="alerts"/);
 });
 
 test("dashboard exposes real Japanese navigation pages", () => {

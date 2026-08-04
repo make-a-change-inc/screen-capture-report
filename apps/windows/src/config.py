@@ -20,7 +20,7 @@ from src.constants import (
 )
 
 REQUIRED_ONBOARDING_SECRETS = (
-    "gemini_api_key", "company_code", "employee_id", "department", "privacy_contact"
+    "gemini_api_key", "company_code", "employee_id", "department"
 )
 STORED_SECRET_KEYS = (
     "gemini_api_key",
@@ -36,6 +36,14 @@ STORED_SECRET_KEYS = (
     "admin_upload_token",
     "admin_sites_bypass_token",
 )
+
+
+DEFAULT_ADMIN_API_URL = "https://screen-capture-report-admin.m-okamura-8e7.workers.dev"
+
+
+def admin_api_url_from_environment() -> str:
+    """Use a local management API only when explicitly requested for development."""
+    return os.environ.get("SCREEN_CAPTURE_REPORT_ADMIN_API_URL", "").strip().rstrip("/")
 
 
 def get_data_dir() -> Path:
@@ -59,6 +67,7 @@ class Settings:
     capture_mode: str = "active_window"
     capture_interval_seconds: int = 60
     analysis_batch_size: int = 5
+    analysis_confidence_threshold: float = 0.60
     work_start: str = "08:00"
     work_end: str = "20:00"
     work_weekdays: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4])
@@ -86,7 +95,9 @@ class Settings:
     consented_at: str = ""
     token_input_jpy_per_million: float = 0.0
     token_output_jpy_per_million: float = 0.0
-    admin_api_url: str = "https://screen-capture-report-admin.m-okamura-8e7.workers.dev"
+    admin_api_url: str = field(
+        default_factory=lambda: admin_api_url_from_environment() or DEFAULT_ADMIN_API_URL
+    )
     server_sync_enabled: bool = False
     server_sync_consent_version: str = ""
     server_sync_consented_at: str = ""
@@ -128,6 +139,8 @@ class Settings:
             raise ValueError("capture_interval_seconds must be at least 10")
         if self.analysis_batch_size < 1:
             raise ValueError("analysis_batch_size must be positive")
+        if not 0 <= self.analysis_confidence_threshold <= 1:
+            raise ValueError("analysis_confidence_threshold must be between 0 and 1")
         if self.idle_threshold_seconds < 60:
             raise ValueError("idle_threshold_seconds must be at least 60")
         if self.max_image_edge < 320:
@@ -174,6 +187,8 @@ class SettingsStore:
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         allowed = set(Settings.__dataclass_fields__)
         settings = Settings(**{k: v for k, v in payload.items() if k in allowed})
+        if override := admin_api_url_from_environment():
+            settings.admin_api_url = override
         settings.validate()
         return settings
 

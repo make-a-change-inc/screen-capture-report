@@ -351,6 +351,7 @@ class AnalysisCoordinator:
                 interval_minutes=settings.capture_interval_seconds / 60.0,
             )
             attempt_usage = response.usage
+            self._normalize_low_confidence(response, settings)
             self._validate_response(response, capture_ids, settings)
             timestamps = [datetime.fromisoformat(record.captured_at) for record in records]
             logs: list[dict[str, Any]] = []
@@ -440,6 +441,16 @@ class AnalysisCoordinator:
             assigned.extend(item.capture_ids)
         if sorted(assigned) != sorted(capture_ids):
             raise ValueError("captures_must_be_assigned_once")
+
+    @staticmethod
+    def _normalize_low_confidence(response: AnalysisResponse, settings: Settings) -> None:
+        """Keep uncertain observations in the time log without using a task category."""
+        if "other" not in {item["id"] for item in settings.categories}:
+            raise ValueError("other_category_required")
+        for item in response.items:
+            if item.confidence < settings.analysis_confidence_threshold:
+                item.category = "other"
+                item.summary = "分類の確信度が低いため、その他として集計"
 
     @staticmethod
     def _cost_entry(

@@ -18,6 +18,7 @@ from src.constants import PURPOSE_LIMITATION
 from src.platform_win import WindowsPlatform
 from src.reporting import ReportService
 from src.service import CaptureNotCompleted, RuntimeService
+from src.sync import ManagementReportSync
 from src.utils import get_resource_path
 from src.viewer import EmployeeArchive, EmployeeArchiveDay
 
@@ -66,10 +67,12 @@ class WindowsTrayUI:
         secrets: SecretBackend,
         platform_api: WindowsPlatform,
         autostart: AutostartManager,
+        report_sync: ManagementReportSync | None = None,
         employee_archive: EmployeeArchive | None = None,
     ):
         self.service = service
         self.reports = reports
+        self.report_sync = report_sync
         self.settings_store = settings_store
         self.secrets = secrets
         self.platform = platform_api
@@ -88,16 +91,6 @@ class WindowsTrayUI:
         root.geometry("680x760")
         root.minsize(560, 480)
         root.resizable(True, True)
-
-        tk.Label(root, text="Screen Capture Report", font=("Segoe UI", 20, "bold")).pack(
-            pady=(20, 8)
-        )
-        tk.Message(
-            root,
-            text=onboarding_notice(settings),
-            width=620,
-            font=("Segoe UI", 10),
-        ).pack(pady=8)
 
         body = tk.Frame(root)
         body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -122,6 +115,16 @@ class WindowsTrayUI:
             lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"),
         )
 
+        tk.Label(scrollable, text="Screen Capture Report", font=("Segoe UI", 20, "bold")).pack(
+            pady=(20, 8)
+        )
+        tk.Message(
+            scrollable,
+            text=onboarding_notice(settings),
+            width=620,
+            font=("Segoe UI", 10),
+        ).pack(padx=28, pady=8)
+
         form = tk.Frame(scrollable)
         form.pack(fill="x", padx=28, pady=12)
         values: dict[str, tk.StringVar] = {}
@@ -137,94 +140,88 @@ class WindowsTrayUI:
             )
 
         add_row("Gemini APIキー（必須）", "gemini_api_key", "", True)
-        add_row("従業員識別子（必須）", "employee_id", self.secrets.get("employee_id") or "")
-        add_row("部署（必須）", "department", self.secrets.get("department") or "")
-        add_row(
-            "訂正・削除・事故連絡先（必須）",
-            "privacy_contact",
-            self.secrets.get("privacy_contact") or "",
-        )
-        add_row(
-            "本人メール（任意）",
-            "employee_email",
-            self.secrets.get("employee_email") or "",
-        )
-        add_row(
-            "経営レポートメール（任意）",
-            "management_email",
-            self.secrets.get("management_email") or "",
-        )
-        add_row(
-            "SMTPユーザー（任意）",
-            "smtp_user",
-            self.secrets.get("smtp_user") or "",
-        )
-        add_row("SMTPアプリパスワード", "smtp_password", "", True)
-        add_row("勤務開始 HH:MM", "work_start", settings.work_start)
-        add_row("勤務終了 HH:MM", "work_end", settings.work_end)
-        add_row(
-            "稼働曜日 0=月〜6=日",
-            "work_weekdays",
-            ",".join(map(str, settings.work_weekdays)),
-        )
+        add_row("会社コード（必須）", "company_code", self.secrets.get("company_code") or "")
+        add_row("社員ID（必須）", "employee_id", self.secrets.get("employee_id") or "")
+        add_row("所属部署（必須）", "department", self.secrets.get("department") or "")
 
-        add_row("企業コード（必須）", "company_code", self.secrets.get("company_code") or "", True)
+        tk.Label(
+            scrollable,
+            text=(
+                "会社コードは、管理者から案内されたコードを入力してください。\n"
+                "初回同期時に端末が自動登録されます。認証トークンや管理画面のURLを入力する必要はありません。"
+            ),
+            justify="left",
+            anchor="w",
+            wraplength=540,
+        ).pack(fill="x", padx=28, pady=(0, 8))
 
         consent = tk.BooleanVar(value=False)
         tk.Checkbutton(
             scrollable,
             variable=consent,
-            text="目的・取得内容・保持期間を理解し、業務時間中の取得に同意します",
+            text=(
+                "目的・取得内容・保持期間を理解し、業務時間中の取得に同意します。"
+                "確定済みの週次集計のみ管理画面へ送信し、画像・日報・ウィンドウタイトルは送信しません。"
+            ),
             wraplength=540,
         ).pack(pady=14)
 
         accepted = {"value": False}
 
         def save() -> None:
-            api_key = values["gemini_api_key"].get().strip()
+            api_key = values["gemini_api_key"].get().strip() or (
+                self.secrets.get("gemini_api_key") or ""
+            )
             if not api_key:
                 messagebox.showerror("入力エラー", "Gemini APIキーが必要です。")
                 return
             required_identity = {
                 key: values[key].get().strip()
-                for key in ("company_code", "employee_id", "department", "privacy_contact")
+                for key in ("company_code", "employee_id", "department")
             }
             if not all(required_identity.values()):
-                messagebox.showerror("入力エラー", "対象者、部署、連絡先はすべて必須です。")
+                messagebox.showerror("入力エラー", "会社コード、社員ID、所属部署はすべて必須です。")
                 return
             if not consent.get():
                 messagebox.showerror("同意が必要です", "同意前に画面取得は開始できません。")
                 return
-            settings.work_start = values["work_start"].get().strip()
-            settings.work_end = values["work_end"].get().strip()
-            settings.work_weekdays = [
-                int(value.strip())
-                for value in values["work_weekdays"].get().split(",")
-                if value.strip()
-            ]
-            settings.grant_consent()
-            settings.grant_server_sync_consent()
-            settings.server_sync_enabled = True
+            settings.revoke_server_sync_consent()
+            settings.server_sync_enabled = False
             try:
                 self.secrets.set("gemini_api_key", api_key)
                 for key, value in required_identity.items():
                     self.secrets.set(key, value)
-                for key in ("employee_email", "management_email", "smtp_user"):
-                    value = values[key].get().strip()
-                    if value:
-                        self.secrets.set(key, value)
-                    else:
-                        self.secrets.delete(key)
-                smtp_user = values["smtp_user"].get().strip()
-                if smtp_user:
-                    self.secrets.set("email_from", smtp_user)
-                else:
-                    self.secrets.delete("email_from")
-                smtp_password = values["smtp_password"].get().strip()
-                if smtp_password:
-                    self.secrets.set("smtp_password", smtp_password)
-                # Consent is the commit marker and is persisted only after all
-                # required Credential Manager/DPAPI writes succeed.
+                self.settings_store.save(settings)
+            except Exception as exc:
+                messagebox.showerror("保存エラー", f"設定を保存できません: {type(exc).__name__}")
+                return
+            if self.report_sync is None:
+                messagebox.showerror(
+                    "登録エラー", "管理画面への登録を開始できません。もう一度お試しください。"
+                )
+                return
+            registration = self.report_sync.register_device()
+            if not registration.success:
+                reason = {
+                    "network_error": (
+                        "管理画面に接続できません。ネットワークを確認して再試行してください。"
+                    ),
+                    "insecure_admin_api_url": "管理画面の接続先が正しくありません。",
+                    "http_401": "会社コードが正しくありません。管理者に確認してください。",
+                    "http_403": (
+                        "この会社では端末登録が許可されていません。管理者に確認してください。"
+                    ),
+                }.get(
+                    registration.error_code or "",
+                    "端末登録に失敗しました。時間をおいて再試行してください。",
+                )
+                messagebox.showerror("登録エラー", reason)
+                return
+            settings.grant_consent()
+            settings.grant_server_sync_consent()
+            settings.server_sync_enabled = True
+            try:
+                # Consent and management sync are enabled only after the device token exists.
                 self.settings_store.save(settings)
             except Exception as exc:
                 messagebox.showerror("保存エラー", f"設定を保存できません: {type(exc).__name__}")
