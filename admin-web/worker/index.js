@@ -58,6 +58,29 @@ async function timingSafeMatch(value, expectedHash) {
   return difference === 0;
 }
 
+async function hashPassword(value) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iterations = 210000;
+  const key = await crypto.subtle.importKey("raw", enc.encode(value), "PBKDF2", false, ["deriveBits"]);
+  const derived = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, 256);
+  return `pbkdf2_sha256$${iterations}$${bytesToBase64(salt)}$${hex(derived)}`;
+}
+
+async function verifyPassword(value, stored) {
+  if (!String(stored).startsWith("pbkdf2_sha256$")) return timingSafeMatch(value, stored);
+  const [, iterationsValue, saltValue, expected] = stored.split("$");
+  const iterations = Number(iterationsValue);
+  if (!Number.isInteger(iterations) || iterations < 100000 || !saltValue || !expected) return false;
+  const key = await crypto.subtle.importKey("raw", enc.encode(value), "PBKDF2", false, ["deriveBits"]);
+  const derived = hex(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256",
+    salt: base64ToBytes(saltValue), iterations }, key, 256));
+  if (derived.length !== expected.length) return false;
+  let difference = 0;
+  for (let index = 0; index < derived.length; index += 1) {
+    difference |= derived.charCodeAt(index) ^ expected.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
 async function reportKey(env) {
   const raw = base64ToBytes(env.REPORT_ENCRYPTION_KEY_V1 || "");
   if (raw.byteLength !== 32) throw new Error("invalid_report_encryption_key");
@@ -349,7 +372,7 @@ async function login(request, env) {
       .bind(company.id, email).first();
   }
   const credentialsValid = company && user?.status === "active"
-    && await timingSafeMatch(password, user.password_hash);
+    && await verifyPassword(password, user.password_hash);
   const mfaValid = !user?.mfa_enabled || await verifyTotp(env, user, String(body.otp || ""));
   if (!credentialsValid || !mfaValid) {
     await env.DB.prepare(
@@ -360,6 +383,12 @@ async function login(request, env) {
     ).bind(attemptKey, now.toISOString(), new Date(now.getTime() - 15 * 60 * 1000).toISOString(),
       new Date(now.getTime() - 15 * 60 * 1000).toISOString()).run();
     return json({ error: credentialsValid && user?.mfa_enabled ? "mfa_required" : "invalid_credentials" }, 401);
+  }
+  if (!user.password_hash.startsWith("pbkdf2_sha256$")) {
+    const upgraded = await hashPassword(password);
+    await env.DB.prepare("UPDATE admin_users SET password_hash=?,updated_at=? WHERE company_id=? AND email=?")
+      .bind(upgraded, now.toISOString(), company.id, email).run();
+    user = { ...user, password_hash: upgraded };
   }
   const token = randomToken();
   const csrfToken = randomToken(24);
@@ -1106,14 +1135,17 @@ async function createPrivacyRequest(request, env, company) {
     return json({ error: "invalid_input" }, 400);
   }
   if (targetType || targetId) {
-    if (!["employee", "report"].includes(targetType) || !targetId) {
+    if (!["company", "employee", "report"].includes(targetType) || !targetId
+      || (targetType === "company" && targetId !== company.id)) {
       return json({ error: "invalid_target" }, 400);
     }
-    const table = targetType === "employee" ? "company_employees" : "company_reports";
-    const column = targetType === "employee" ? "employee_id" : "report_id";
-    const owned = await env.DB.prepare(`SELECT ${column} AS id FROM ${table} WHERE company_id=? AND ${column}=?`)
-      .bind(company.id, targetId).first();
-    if (!owned) return json({ error: "target_not_found" }, 404);
+    if (targetType !== "company") {
+      const table = targetType === "employee" ? "company_employees" : "company_reports";
+      const column = targetType === "employee" ? "employee_id" : "report_id";
+      const owned = await env.DB.prepare(`SELECT ${column} AS id FROM ${table} WHERE company_id=? AND ${column}=?`)
+        .bind(company.id, targetId).first();
+      if (!owned) return json({ error: "target_not_found" }, 404);
+    }
   }
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -1176,10 +1208,14 @@ async function executeDeletionRequest(env, company, requestId) {
   if (hold) return json({ error: "legal_hold_active", holdId: hold.id }, 409);
   const reportIds = item.target_type === "report" ? [{ id: item.target_id }] :
     (await env.DB.prepare(`SELECT r.id FROM reports r JOIN company_reports cr ON cr.report_id=r.id
-      WHERE cr.company_id=? AND r.employee_id=?`).bind(company.id, item.target_id).all()).results;
-  const devices = item.target_type === "employee" ? (await env.DB.prepare(`SELECT d.id FROM devices d
-    JOIN company_devices cd ON cd.device_id=d.id WHERE cd.company_id=? AND d.employee_id=?`)
-    .bind(company.id, item.target_id).all()).results : [];
+      WHERE cr.company_id=? AND (?='company' OR r.employee_id=?)`)
+      .bind(company.id, item.target_type, item.target_id).all()).results;
+  const devices = ["employee", "company"].includes(item.target_type) ? (await env.DB.prepare(`SELECT d.id FROM devices d
+    JOIN company_devices cd ON cd.device_id=d.id WHERE cd.company_id=? AND (?='company' OR d.employee_id=?)`)
+    .bind(company.id, item.target_type, item.target_id).all()).results : [];
+  const employeeIds = item.target_type === "company" ? (await env.DB.prepare(
+    "SELECT employee_id AS id FROM company_employees WHERE company_id=?",
+  ).bind(company.id).all()).results : item.target_type === "employee" ? [{ id: item.target_id }] : [];
   const statements = [];
   for (const report of reportIds) statements.push(
     env.DB.prepare("DELETE FROM report_versions WHERE report_id=?").bind(report.id),
@@ -1188,28 +1224,42 @@ async function executeDeletionRequest(env, company, requestId) {
     env.DB.prepare("DELETE FROM report_metrics WHERE report_id=?").bind(report.id),
     env.DB.prepare("DELETE FROM company_reports WHERE report_id=? AND company_id=?").bind(report.id, company.id),
     env.DB.prepare("DELETE FROM reports WHERE id=?").bind(report.id));
-  if (item.target_type === "employee") {
+  if (["employee", "company"].includes(item.target_type)) {
     for (const device of devices) statements.push(
       env.DB.prepare("DELETE FROM device_heartbeats WHERE device_id=? AND company_id=?").bind(device.id, company.id),
       env.DB.prepare("DELETE FROM idempotency_keys WHERE device_id=?").bind(device.id),
       env.DB.prepare("DELETE FROM company_devices WHERE device_id=? AND company_id=?").bind(device.id, company.id),
       env.DB.prepare("DELETE FROM devices WHERE id=?").bind(device.id));
-    statements.push(env.DB.prepare("DELETE FROM consent_events WHERE employee_id=? AND company_id=?")
-      .bind(item.target_id, company.id), env.DB.prepare("DELETE FROM company_employees WHERE employee_id=? AND company_id=?")
-      .bind(item.target_id, company.id), env.DB.prepare("DELETE FROM employees WHERE id=?").bind(item.target_id));
+    for (const employee of employeeIds) statements.push(
+      env.DB.prepare("DELETE FROM consent_events WHERE employee_id=? AND company_id=?")
+        .bind(employee.id, company.id),
+      env.DB.prepare("DELETE FROM company_employees WHERE employee_id=? AND company_id=?")
+        .bind(employee.id, company.id),
+      env.DB.prepare("DELETE FROM employees WHERE id=?").bind(employee.id));
+  }
+  if (item.target_type === "company") {
+    statements.push(
+      env.DB.prepare("DELETE FROM opportunity_states WHERE company_id=?").bind(company.id),
+      env.DB.prepare("DELETE FROM classification_rules WHERE company_id=?").bind(company.id),
+      env.DB.prepare("DELETE FROM consent_events WHERE company_id=?").bind(company.id),
+      env.DB.prepare("DELETE FROM device_heartbeats WHERE company_id=?").bind(company.id),
+      env.DB.prepare("DELETE FROM collection_policies WHERE company_id=?").bind(company.id),
+      env.DB.prepare("DELETE FROM delivery_channels WHERE company_id=?").bind(company.id),
+      env.DB.prepare("DELETE FROM delivery_schedules WHERE company_id=?").bind(company.id),
+      env.DB.prepare("DELETE FROM report_deliveries WHERE company_id=?").bind(company.id));
   }
   const now = new Date().toISOString(), receiptId = crypto.randomUUID();
   statements.push(env.DB.prepare(`INSERT INTO deletion_receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(receiptId, company.id, requestId, item.target_type, await sha256(item.target_id), reportIds.length,
-      devices.length, Number(item.target_type === "employee"), company.email, now),
+      devices.length, employeeIds.length, company.email, now),
     env.DB.prepare("UPDATE privacy_requests SET status='completed', resolved_by=?, resolved_at=? WHERE id=? AND company_id=?")
       .bind(company.email, now, requestId, company.id));
   await env.DB.batch(statements);
   await audit(env, "admin", company.email, "privacy_deletion.executed", "company", company.id,
     { requestId, receiptId, targetType: item.target_type, reportsDeleted: reportIds.length,
-      devicesDeleted: devices.length, employeesDeleted: Number(item.target_type === "employee") });
+      devicesDeleted: devices.length, employeesDeleted: employeeIds.length });
   return json({ ok: true, receiptId, reportsDeleted: reportIds.length, devicesDeleted: devices.length,
-    employeesDeleted: Number(item.target_type === "employee") });
+    employeesDeleted: employeeIds.length });
 }
 
 async function updatePrivacyRequest(request, env, company, requestId) {
@@ -1272,7 +1322,7 @@ async function createAdminUser(request, env, company) {
   const temporaryPassword = randomToken(18);
   const now = new Date().toISOString();
   await env.DB.prepare(`INSERT INTO admin_users VALUES (?, ?, ?, ?, 'active', NULL, NULL, 0, ?, ?, ?)`)
-    .bind(company.id, email, await sha256(temporaryPassword), role, company.email, now, now).run();
+    .bind(company.id, email, await hashPassword(temporaryPassword), role, company.email, now, now).run();
   await audit(env, "admin", company.email, "admin_user.created", "company", company.id, { email, role });
   return json({ email, role, temporaryPassword }, 201);
 }
@@ -1347,6 +1397,29 @@ async function confirmMfa(request, env, company) {
   ]);
   await audit(env, "admin", company.email, "mfa.enabled", "company", company.id);
   return json({ ok: true, mfaEnabled: true });
+}
+
+async function changePassword(request, env, company) {
+  const body = await request.json();
+  const currentPassword = String(body.currentPassword || ""), newPassword = String(body.newPassword || "");
+  const user = await env.DB.prepare("SELECT password_hash FROM admin_users WHERE company_id=? AND email=?")
+    .bind(company.id, company.email).first();
+  if (!user || !await verifyPassword(currentPassword, user.password_hash)) {
+    return json({ error: "current_password_invalid" }, 401);
+  }
+  if (newPassword.length < 12 || newPassword.length > 256 || newPassword === currentPassword
+    || !/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+    return json({ error: "weak_password" }, 400);
+  }
+  const currentHash = await sha256(company.sessionToken), now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE admin_users SET password_hash=?,updated_at=? WHERE company_id=? AND email=?")
+      .bind(await hashPassword(newPassword), now, company.id, company.email),
+    env.DB.prepare("DELETE FROM admin_sessions WHERE company_id=? AND email=? AND token_hash<>?")
+      .bind(company.id, company.email, currentHash),
+  ]);
+  await audit(env, "admin", company.email, "password.changed", "company", company.id);
+  return json({ ok: true });
 }
 
 const deliveryHint = (channel, destination) => channel === "email"
@@ -1518,11 +1591,45 @@ async function runScheduledDeliveries(env) {
   }
 }
 
+async function exportTenantData(env, company) {
+  const [employees, devices, reports, settings, consent, auditRows, admins] = await Promise.all([
+    env.DB.prepare(`SELECT e.id,e.display_name,e.department,e.status,e.created_at,ce.external_employee_id
+      FROM company_employees ce JOIN employees e ON e.id=ce.employee_id WHERE ce.company_id=?`)
+      .bind(company.id).all(),
+    env.DB.prepare(`SELECT d.id,d.employee_id,d.name,d.status,d.app_version,d.last_seen_at,d.created_at
+      FROM company_devices cd JOIN devices d ON d.id=cd.device_id WHERE cd.company_id=?`)
+      .bind(company.id).all(),
+    env.DB.prepare(`SELECT r.* FROM company_reports cr JOIN reports r ON r.id=cr.report_id
+      WHERE cr.company_id=? ORDER BY r.period_start`).bind(company.id).all(),
+    env.DB.prepare("SELECT * FROM company_settings WHERE company_id=?").bind(company.id).first(),
+    env.DB.prepare("SELECT * FROM consent_events WHERE company_id=? ORDER BY occurred_at").bind(company.id).all(),
+    env.DB.prepare(`SELECT actor_type,actor_id,action,target_type,target_id,occurred_at,metadata_json
+      FROM audit_events WHERE target_type='company' AND target_id=? ORDER BY occurred_at`).bind(company.id).all(),
+    env.DB.prepare("SELECT email,role,status,mfa_enabled,created_at,updated_at FROM admin_users WHERE company_id=?")
+      .bind(company.id).all(),
+  ]);
+  const reportData = [];
+  for (const { content_cipher, content_nonce, ...report } of reports.results) {
+    reportData.push({ ...report, html: await decryptReport(env, content_cipher, content_nonce) });
+  }
+  await audit(env, "admin", company.email, "tenant.exported", "company", company.id,
+    { employees: employees.results.length, devices: devices.results.length, reports: reportData.length });
+  const payload = JSON.stringify({ schemaVersion: 1, exportedAt: new Date().toISOString(),
+    company: { id: company.id, name: company.name }, settings, administrators: admins.results.map(
+      (item) => ({ ...item, mfa_enabled: Boolean(item.mfa_enabled) })), employees: employees.results,
+    devices: devices.results, reports: reportData, consentEvents: consent.results,
+    auditEvents: auditRows.results.map((item) => ({ ...item,
+      metadata: JSON.parse(item.metadata_json || "{}"), metadata_json: undefined })) }, null, 2);
+  return new Response(payload, { headers: { "content-type": "application/json; charset=utf-8",
+    "content-disposition": `attachment; filename="tenant-export-${new Date().toISOString().slice(0, 10)}.json"`,
+    "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+}
+
 async function adminApi(request, env, pathname) {
   const company = await requireAdmin(request, env);
   if (!company) return json({ error: "admin_auth_required" }, 401);
-  const mfaPath = pathname.startsWith("/api/admin/mfa/");
-  if (request.method !== "GET" && !mfaPath && !canMutate(company, pathname)) {
+  const selfSecurityPath = pathname.startsWith("/api/admin/mfa/") || pathname === "/api/admin/password";
+  if (request.method !== "GET" && !selfSecurityPath && !canMutate(company, pathname)) {
     return json({ error: "permission_denied" }, 403);
   }
   if (company.role === "auditor" && /\/reports\/[^/]+\/(versions\/\d+\/)?content$/.test(pathname)) {
@@ -1549,6 +1656,14 @@ async function adminApi(request, env, pathname) {
   if (request.method === "POST" && pathname === "/api/admin/mfa/confirm") {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
     return confirmMfa(request, env, company);
+  }
+  if (request.method === "GET" && pathname === "/api/admin/tenant-export") {
+    if (company.role !== "owner") return json({ error: "permission_denied" }, 403);
+    return exportTenantData(env, company);
+  }
+  if (request.method === "PATCH" && pathname === "/api/admin/password") {
+    if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
+    return changePassword(request, env, company);
   }
   if (request.method === "PUT" && pathname === "/api/admin/delivery-channel") {
     if (!validCsrf(request, company)) return json({ error: "csrf_invalid" }, 403);
