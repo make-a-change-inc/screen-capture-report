@@ -1,6 +1,6 @@
 # 管理画面 元仕様・実装対応表
 
-更新日: 2026-08-04
+更新日: 2026-08-05
 
 ## 判定基準
 
@@ -30,7 +30,7 @@
 
 | 項目 | 現在の状態 | 完了に必要なもの |
 |---|---|---|
-| Cloudflare Email Service | Workerは `EMAIL` bindingと`REPORT_EMAIL_FROM`がある場合だけ送信する。未設定時は503と失敗履歴。本環境のEmail Sending照会はCloudflare API `Unauthorized (2036)`。 | Email Sending権限を持つCloudflare認証、送信ドメインのonboard、`send_email` binding、送信元アドレス |
+| Cloudflare Email Service | Workerは `EMAIL` bindingと`REPORT_EMAIL_FROM`がある場合だけ送信する。未設定時は503と失敗履歴。Wrangler 4.115.0と4.118.0の双方で、OAuth権限一覧には `email_sending (write)` がある一方、Email Sending照会はCloudflare API `Unauthorized (2036)`。 | Cloudflareアカウント側のEmail Sending利用可否確認、送信ドメインのonboard、`send_email` binding、送信元アドレス、実受信先 |
 | SSO／IdP連携 | 汎用OIDC Authorization Code + PKCE、state/nonce、Discovery、JWKS署名検証、許可ドメイン、JITユーザー作成、role連携を実装。未設定企業は未接続と明示。 | 採用IdPのissuer、client ID／secret、callback URL登録、許可メールドメイン、初回role |
 
 外部設定がない状態で「配信済み」「SSO有効」と表示する実装は行わない。
@@ -53,5 +53,13 @@
 - PR #19: 複数管理者・RBAC・MFA・セッション管理
 - PR #20: PDF・メール／Slack／Teams配信基盤
 - PR #21: テナント出力・削除・PBKDF2・パスワード変更
+- PR #23: 企業別OIDC SSO
+- PR #24: 廃止済みブラウザパスワード認証コードの削除
+
+最新の本番反映:
+
+- main: `1f50650fd4eb9d8fcedda211e909ba0c4a3e4d83`
+- GitHub Actions: `30960913489` 成功
+- Cloudflare deployment version: `83d09101-c8f8-49ae-8e3a-a79636567d99`
 
 Cloudflare本番URL: `https://screen-capture-report-admin.m-okamura-8e7.workers.dev/`
